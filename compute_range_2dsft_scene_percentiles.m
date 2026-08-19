@@ -37,6 +37,9 @@ ENABLE_IN_MEMORY_PERCENTILE = true; % 数据量不超过上限时使用精确mem
 SCRIPT_PATH = string(mfilename('fullpath'));
 REPO_ROOT = string(fileparts(SCRIPT_PATH));
 addpath(REPO_ROOT);
+addpath(fullfile(REPO_ROOT, "sampling"));
+addpath(fullfile(REPO_ROOT, "sft"));
+addpath(fullfile(REPO_ROOT, "sarproc"));
 
 % cfg只保存本脚本实际使用的生产配置，不依赖任何外部配置函数。
 cfg = struct();
