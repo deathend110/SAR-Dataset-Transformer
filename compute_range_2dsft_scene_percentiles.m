@@ -28,6 +28,9 @@ LOW_PERCENTILE = 0.99;   % Robust min-max下限：0.99百分位
 HIGH_PERCENTILE = 99.9;  % Robust min-max上限：99.9百分位
 ROI_SIZE = 600;          % 分位数必须在600×600原始幅度ROI上统计
 ENERGY_BUFFER = 64;      % 每个H/L边界两侧用于估计功率的RC列数
+WORK_ROOT_OVERRIDE = ""; % 可选SSD临时目录；为空时使用OUTPUT_ROOT/_work
+MAX_IN_MEMORY_PERCENTILE_GB = 6; % 精确memory backend的最大single数据量
+ENABLE_IN_MEMORY_PERCENTILE = false; % 未通过与现有tall的严格数值一致性验证
 
 %% ========================== 仓库与公共配置 ===============================
 % 脚本位置同时作为FS60参数文件和结果目录的基准路径。
@@ -54,7 +57,11 @@ cfg.sequence = struct( ...
 S60 = load(cfg.parameter_file_60); % 60MHz距离-多普勒成像参数
 OUTPUT_ROOT = fullfile(REPO_ROOT, ...
     "results_range_2dsft_scene_percentiles");
-WORK_ROOT = fullfile(OUTPUT_ROOT, "_work"); % 分位数chunk和checkpoint临时目录
+if strlength(strtrim(WORK_ROOT_OVERRIDE)) == 0
+    WORK_ROOT = fullfile(OUTPUT_ROOT, "_work");
+else
+    WORK_ROOT = string(WORK_ROOT_OVERRIDE);
+end
 
 % protocol记录所有会影响统计结果的公共规则；manifest固定数据来源。
 protocol = build_protocol(cfg, S60, BLOCKS_PER_FILE, ...
@@ -112,9 +119,14 @@ for scene_idx = 1:numel(scenes)
             fprintf('    该参数已有完整统计，跳过。\n');
             continue;
         end
+        carrier_h = build_2dsft_carrier( ...
+            grid_h, pair.H.threshold, S60);
+        carrier_l = build_2dsft_carrier( ...
+            grid_l, pair.L.threshold, S60);
         result = process_scene_parameter( ...
             cfg, S60, scene_manifest, pair, parameters, protocol, ...
-            work_directory, need_gt);
+            work_directory, need_gt, carrier_h, carrier_l, ...
+            MAX_IN_MEMORY_PERCENTILE_GB, ENABLE_IN_MEMORY_PERCENTILE);
         if need_gt
             gt_stats = result.gt_stats;
         end
@@ -282,7 +294,9 @@ signal60 = signal60(1:S60.nrn, :);
 end
 
 function result = process_scene_parameter(cfg, S60, scene_manifest, ...
-        pair, parameters, protocol, work_directory, need_gt)
+        pair, parameters, protocol, work_directory, need_gt, ...
+        carrier_h, carrier_l, max_in_memory_percentile_gb, ...
+        enable_in_memory_percentile)
 %PROCESS_SCENE_PARAMETER 计算一个场景、一组参数的JointHL分位数。
 % scene_manifest包含该场景全部均匀抽样序列；pair定义H/L采集分支。
 % need_gt=true时在同一遍历中同步收集GT像素，避免额外读取和成像。
@@ -329,9 +343,11 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
     end
 
     % 同一连续回波分别生成H/L完整RC；二者共享SFT物理参数。
-    RC_H = generate_range_2dsft_rc(signal, S60, pair.H);
-    RC_L = generate_range_2dsft_rc(signal, S60, pair.L);
-    [~, mix_info] = align_and_mix_rc( ...
+    RC_H = generate_range_2dsft_rc( ...
+        signal, S60, pair.H, carrier_h);
+    RC_L = generate_range_2dsft_rc( ...
+        signal, S60, pair.L, carrier_l);
+    mix_info = estimate_rc_alignment( ...
         RC_H, RC_L, mask.full, protocol.energy_buffer);
     % JointHL中的纯H图必须与实际RC_mix里的H区域使用同一个gamma。
     RC_H = RC_H * mix_info.scale_factor;
@@ -383,11 +399,14 @@ end
 percentages = [protocol.low_percentile, protocol.high_percentile];
 input_stats = calculate_chunk_percentiles( ...
     joint_directory, percentages, "JointHL", ...
-    2 * sequence_count * frame_count);
+    2 * sequence_count * frame_count, pixels_per_image, ...
+    max_in_memory_percentile_gb, sequence_count, enable_in_memory_percentile);
 
 if need_gt
     gt_stats = calculate_chunk_percentiles( ...
-        gt_directory, percentages, "GT", sequence_count * frame_count);
+        gt_directory, percentages, "GT", sequence_count * frame_count, ...
+        pixels_per_image, max_in_memory_percentile_gb, sequence_count, ...
+        enable_in_memory_percentile);
 else
     gt_stats = struct();
 end
@@ -612,10 +631,11 @@ values = [single(h_image(:)); single(l_image(:))];
 end
 
 function stats = calculate_chunk_percentiles( ...
-        chunk_directory, percentages, modality, image_count)
-%CALCULATE_CHUNK_PERCENTILES 计算跨全部磁盘chunk的场景级分位数。
-% percentages=[低分位,高分位]，modality用于结果标识，image_count用于审计。
-% fileDatastore+tall避免一次载入数十亿像素；Method=midpoint固定插值规则。
+        chunk_directory, percentages, modality, image_count, ...
+        pixels_per_image, max_in_memory_percentile_gb, ...
+        expected_chunk_count, enable_in_memory_percentile)
+%CALCULATE_CHUNK_PERCENTILES 使用精确memory或tall路径计算场景级分位数。
+% 两条路径都使用全部single像素和midpoint插值；backend只记录运行审计。
 files = dir(fullfile(chunk_directory, "chunk_*.mat"));
 [~, order] = sort(lower(string({files.name})));
 files = files(order);
@@ -623,32 +643,58 @@ if isempty(files)
     error('scenePercentiles:PercentileChunksMissing', ...
         '没有找到分位数数据块：%s', chunk_directory);
 end
-
-paths = strings(numel(files), 1); % 按chunk编号排序后的完整路径
-pixel_count = 0;                  % 所有chunk实际像素总数
-for idx = 1:numel(files)
-    paths(idx) = string(fullfile(files(idx).folder, files(idx).name));
-    variables = whos('-file', paths(idx));
-    match = strcmp({variables.name}, 'values');
-    if sum(match) ~= 1
-        error('scenePercentiles:ChunkSchema', ...
-            '数据块必须且只能包含一个values变量：%s', paths(idx));
-    end
-    variable = variables(match);
-    if ~strcmp(variable.class, 'single') || ...
-            numel(variable.size) ~= 2 || variable.size(2) ~= 1
-        error('scenePercentiles:ChunkType', ...
-            'chunk.values必须是single列向量：%s', paths(idx));
-    end
-    pixel_count = pixel_count + prod(variable.size);
+if numel(files) ~= expected_chunk_count
+    error('scenePercentiles:ChunkCountMismatch', ...
+        'chunk数量%d与协议预期%d不一致：%s', ...
+        numel(files), expected_chunk_count, chunk_directory);
 end
 
-% 每次只读取一个single列向量，tall在本地会话中顺序汇总。
-datastore_value = fileDatastore(paths, ...
-    'ReadFcn', @read_chunk_values, 'UniformRead', true);
-mapreducer(0); % 使用本地MATLAB会话，不依赖并行许可证。
-tall_values = tall(datastore_value);
-limits = gather(prctile(tall_values, percentages, Method="midpoint"));
+paths = strings(numel(files), 1); % 按chunk编号排序后的完整路径
+for idx = 1:numel(files)
+    paths(idx) = string(fullfile(files(idx).folder, files(idx).name));
+end
+pixel_count = double(image_count) * double(pixels_per_image);
+if ~isfinite(pixel_count) || pixel_count <= 0 || pixel_count ~= fix(pixel_count)
+    error('scenePercentiles:PixelCount', ...
+        '理论像素数量必须是正整数。');
+end
+max_bytes = double(max_in_memory_percentile_gb) * 1024 ^ 3;
+if ~isfinite(max_bytes) || max_bytes <= 0
+    error('scenePercentiles:PercentileMemoryLimit', ...
+        'memory percentile容量上限必须为正数。');
+end
+
+if enable_in_memory_percentile && pixel_count * 4 <= max_bytes
+    all_values = zeros(pixel_count, 1, 'single');
+    cursor = 1;
+    for idx = 1:numel(paths)
+        chunk_values = read_chunk_values(paths(idx));
+        next_cursor = cursor + numel(chunk_values) - 1;
+        if next_cursor > pixel_count
+            error('scenePercentiles:PixelCountMismatch', ...
+                'chunk像素数量超过协议预期：%s', paths(idx));
+        end
+        all_values(cursor:next_cursor) = chunk_values;
+        cursor = next_cursor + 1;
+        clear chunk_values
+    end
+    if cursor - 1 ~= pixel_count
+        error('scenePercentiles:PixelCountMismatch', ...
+            'chunk像素数量与协议预期不一致。');
+    end
+    limits = prctile(all_values, percentages, Method="midpoint");
+    backend = "memory";
+    clear all_values
+else
+    % 每次只读取一个single列向量，tall在本地MATLAB会话中顺序汇总。
+    datastore_value = fileDatastore(paths, ...
+        'ReadFcn', @read_chunk_values, 'UniformRead', true);
+    mapreducer(0); % 使用本地MATLAB会话，不依赖并行许可证。
+    tall_values = tall(datastore_value);
+    limits = gather(prctile(tall_values, percentages, Method="midpoint"));
+    backend = "tall";
+    clear datastore_value tall_values
+end
 limits = double(limits(:));
 if numel(limits) ~= 2 || any(~isfinite(limits)) || limits(2) <= limits(1)
     error('scenePercentiles:DegeneratePercentiles', ...
@@ -659,7 +705,7 @@ stats = struct("Modality", modality, "VMin", limits(1), ...
     "PixelCount", pixel_count, "ChunkCount", numel(files), ...
     "LowPercentile", percentages(1), ...
     "HighPercentile", percentages(2), ...
-    "Method", "midpoint_exact_tall");
+    "Method", "midpoint_exact_tall", "Backend", backend);
 end
 
 function values = read_chunk_values(file_path)
@@ -670,7 +716,12 @@ if ~isfield(loaded, 'values')
     error('scenePercentiles:ChunkSchema', ...
         '数据块缺少values变量：%s', file_path);
 end
-values = loaded.values(:);
+values = loaded.values;
+if ~isa(values, 'single') || ~ismatrix(values) || ...
+        size(values, 2) ~= 1
+    error('scenePercentiles:ChunkType', ...
+        'chunk.values必须是single列向量：%s', file_path);
+end
 end
 
 function key = make_parameter_key(parameters, protocol)

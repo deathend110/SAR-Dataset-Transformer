@@ -1,0 +1,13 @@
+function carrier = build_2dsft_carrier(grid, parameters, S60)
+%BUILD_2DSFT_CARRIER 构造与信号幅度无关的二维复SFT载波。
+% carrier只依赖采样网格、fr/fa/phi0和FS60参数，不包含sigma_hat或STR幅度。
+fast_time = ((0:grid.upsampled_size(1)-1).' ...
+    - floor(grid.upsampled_size(1) / 2)) / grid.Fs_up;
+slow_time = ((0:grid.upsampled_size(2)-1) ...
+    - floor(grid.upsampled_size(2) / 2)) / grid.PRF_up;
+phase_range = 2 * pi * (parameters.fr_over_Br * S60.B) * fast_time;
+phase_azimuth = 2 * pi * ...
+    (parameters.fa_over_Ba * resolve_azimuth_bandwidth(S60)) * slow_time;
+carrier = exp(1i * ...
+    (phase_range + phase_azimuth + parameters.phi0));
+end
