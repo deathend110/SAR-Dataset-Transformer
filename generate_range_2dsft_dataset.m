@@ -145,7 +145,13 @@ fprintf('输出目录：%s\n', OUTPUT_ROOT);
 function validate_public_dependencies(repo_root)
 %VALIDATE_PUBLIC_DEPENDENCIES 检查脚本允许调用的公共成像函数。
 required = ["Range_Compress", "RCMC", "SAR_Imaging", ...
-    "minmaxnormalize_image", "quantize_1bit"];
+    "minmaxnormalize_image", "quantize_1bit", ...
+    "upsample_range_fft", "crop_range_spectrum", ...
+    "build_2dsft_threshold", "resolve_range_grid", ...
+    "resolve_azimuth_bandwidth", "resolve_pair_grids", ...
+    "make_range_sft_pair", "generate_range_2dsft_rc", ...
+    "align_and_mix_rc", "focus_base_rc", ...
+    "generate_gt_image", "crop_center"];
 for name = required
     expected = fullfile(repo_root, name + ".m");
     if ~isfile(expected) || exist(char(name), 'file') ~= 2
@@ -519,159 +525,6 @@ for frame_idx = 1:sequence.n_frames
 end
 end
 
-function pair = make_range_sft_pair(parameters)
-%MAKE_RANGE_SFT_PAIR 构造除距离倍率外完全共享的H/L采集配置。
-threshold = struct( ...
-    "STR_dB", parameters.STRdB, ...
-    "fr_over_Br", parameters.FrOverBr, ...
-    "fa_over_Ba", parameters.FaOverBa, ...
-    "phi0", parameters.Phi0);
-base = struct("method", "Range_2D_SFT", ...
-    "threshold", threshold, "time_origin", "block_global");
-pair = struct("method", "Range_2D_SFT", ...
-    "q_high", parameters.QHigh, "q_low", parameters.QLow, ...
-    "H", base, "L", base);
-pair.H.q_total = parameters.QHigh;
-pair.L.q_total = parameters.QLow;
-end
-
-function [grid_h, grid_l] = resolve_pair_grids( ...
-        pair, sequence, S60, nyquist_margin)
-%RESOLVE_PAIR_GRIDS 解析H/L实际整数网格并检查共同Nyquist上限。
-input_size = [sequence.signal_height, sequence.block_width];
-grid_h = resolve_range_grid(pair.H.q_total, input_size, S60);
-grid_l = resolve_range_grid(pair.L.q_total, input_size, S60);
-azimuth_bandwidth = resolve_azimuth_bandwidth(S60);
-fr_limit = nyquist_margin * min(grid_h.Fs_up, grid_l.Fs_up) ...
-    / (2 * S60.B);
-fa_limit = nyquist_margin * min(grid_h.PRF_up, grid_l.PRF_up) ...
-    / (2 * azimuth_bandwidth);
-fr = pair.H.threshold.fr_over_Br;
-fa = pair.H.threshold.fa_over_Ba;
-if fr >= fr_limit || fa >= fa_limit
-    error('rangeSFTDataset:SFTNyquistViolation', ...
-        ['SFT频率必须满足fr/Br<%.12g、fa/Ba<%.12g；' ...
-        '当前为%.12g、%.12g。'], fr_limit, fa_limit, fr, fa);
-end
-end
-
-function grid = resolve_range_grid(q_range, input_size, S60)
-%RESOLVE_RANGE_GRID 将名义倍率映射为round(q*N)后的实际距离网格。
-if ~isfinite(q_range) || q_range < 1
-    error('rangeSFTDataset:SamplingFactor', ...
-        '距离上采样倍率必须是不小于1的有限数。');
-end
-nr_up = round(q_range * input_size(1));
-q_range_eff = nr_up / input_size(1);
-grid = struct( ...
-    "q_range", q_range, "q_azimuth", 1, ...
-    "q_range_eff", q_range_eff, "q_azimuth_eff", 1, ...
-    "q_total_eff", q_range_eff, ...
-    "input_size", input_size, ...
-    "upsampled_size", [nr_up, input_size(2)], ...
-    "Fs_up", q_range_eff * S60.Fs, ...
-    "PRF_up", S60.prf);
-end
-
-function RC_base = generate_range_2dsft_rc(signal, S60, acquisition)
-%GENERATE_RANGE_2DSFT_RC 生成一条采集分支的60MHz基网格RC。
-grid = resolve_range_grid(acquisition.q_total, size(signal), S60);
-signal_up = upsample_range_fft(signal, grid.upsampled_size(1));
-threshold = build_2dsft_threshold( ...
-    signal_up, grid, acquisition.threshold, S60);
-if ~isequal(size(signal_up), size(threshold))
-    error('rangeSFTDataset:ThresholdSize', ...
-        '回波与二维SFT阈值尺寸不一致。');
-end
-
-% 公共quantize_1bit对输入直接取I/Q符号，因此先显式执行“信号+阈值”。
-channel_1bit = quantize_1bit(signal_up + threshold);
-tnrn_up = 2 * S60.R0 / S60.C + ...
-    ((0:size(signal_up, 1)-1).' - floor(size(signal_up, 1) / 2)) ...
-    / grid.Fs_up;
-RC_up = Range_Compress(channel_1bit, S60.fc, tnrn_up, S60.gama, ...
-    S60.R0, S60.C, grid.Fs_up, S60.Tp);
-RC_base = crop_range_spectrum(RC_up, size(signal, 1));
-if ~isequal(size(RC_base), size(signal))
-    error('rangeSFTDataset:BaseRCSize', ...
-        '距离压缩结果无法投影回60MHz基网格。');
-end
-end
-
-function signal_up = upsample_range_fft(signal, target_rows)
-%UPSAMPLE_RANGE_FFT 沿距离维执行中心频谱补零带限插值。
-current_rows = size(signal, 1);
-if target_rows < current_rows
-    error('rangeSFTDataset:UpsampleSize', ...
-        '距离上采样目标尺寸不能小于输入尺寸。');
-elseif target_rows == current_rows
-    signal_up = signal;
-    return;
-end
-spectrum = fftshift(fft(signal, [], 1), 1);
-pad_total = target_rows - current_rows;
-pad_top = floor(pad_total / 2);
-pad_bottom = pad_total - pad_top;
-spectrum_up = [ ...
-    zeros(pad_top, size(signal, 2), 'like', spectrum); ...
-    spectrum; ...
-    zeros(pad_bottom, size(signal, 2), 'like', spectrum)];
-signal_up = ifft(ifftshift(spectrum_up, 1), [], 1) ...
-    * (target_rows / current_rows);
-end
-
-function threshold = build_2dsft_threshold(signal_up, grid, parameters, S60)
-%BUILD_2DSFT_THRESHOLD 在完整连续块上构造确定性二维单频阈值。
-sigma_hat = sqrt(2 / pi) * mean(abs(signal_up(:)));
-amplitude = sigma_hat / (10 ^ (parameters.STR_dB / 20));
-fr_hz = parameters.fr_over_Br * S60.B;
-fa_hz = parameters.fa_over_Ba * resolve_azimuth_bandwidth(S60);
-
-fast_time = ((0:size(signal_up, 1)-1).' ...
-    - floor(size(signal_up, 1) / 2)) / grid.Fs_up;
-slow_time = ((0:size(signal_up, 2)-1) ...
-    - floor(size(signal_up, 2) / 2)) / grid.PRF_up;
-phase_range = 2 * pi * fr_hz * fast_time;
-phase_azimuth = 2 * pi * fa_hz * slow_time;
-threshold = amplitude * exp(1i * ...
-    (phase_range + phase_azimuth + parameters.phi0));
-end
-
-function output = crop_range_spectrum(input, target_rows)
-%CROP_RANGE_SPECTRUM 将上采样RC的距离中心频谱投影回基网格。
-current_rows = size(input, 1);
-if target_rows > current_rows
-    error('rangeSFTDataset:CropSize', ...
-        '距离频谱裁剪目标不能大于当前尺寸。');
-elseif target_rows == current_rows
-    output = input;
-    return;
-end
-spectrum = fftshift(fft(input, [], 1), 1);
-center = floor(current_rows / 2) + 1;
-half_width = floor(target_rows / 2);
-if mod(target_rows, 2) == 0
-    indices = center-half_width:center+half_width-1;
-else
-    indices = center-half_width:center+half_width;
-end
-output = ifft(ifftshift(spectrum(indices, :), 1), [], 1);
-end
-
-function bandwidth = resolve_azimuth_bandwidth(S60)
-%RESOLVE_AZIMUTH_BANDWIDTH 从FS60参数中解析方位带宽Ba。
-if isfield(S60, 'Ba')
-    bandwidth = S60.Ba;
-elseif isfield(S60, 'Bd')
-    bandwidth = S60.Bd;
-elseif isfield(S60, 'Da')
-    bandwidth = 2 * S60.v / S60.Da;
-else
-    error('rangeSFTDataset:AzimuthBandwidth', ...
-        'FS60参数必须包含Ba、Bd或Da。');
-end
-end
-
 function mask = build_hlh_mask(sequence)
 %BUILD_HLH_MASK 构造H(512)-L(512)-H(512)及两端扩展掩膜。
 logic_mask = false(1, sequence.logic_length);
@@ -690,89 +543,6 @@ mask = struct("logic", logic_mask, "full", full_mask, ...
     "boundaries", boundaries);
 end
 
-function [RC_mix, info] = align_and_mix_rc(RC_H, RC_L, mode_mask, buffer)
-%ALIGN_AND_MIX_RC 以两个边界的汇总功率估计单一gamma并混合H/L。
-if ~isequal(size(RC_H), size(RC_L))
-    error('rangeSFTDataset:RCSizeMismatch', 'H/L RC尺寸不一致。');
-end
-mode_mask = logical(mode_mask(:).');
-if numel(mode_mask) ~= size(RC_H, 2)
-    error('rangeSFTDataset:RCMaskLength', ...
-        'H-L-H掩膜长度必须等于RC方位列数。');
-end
-boundaries = find(diff(mode_mask) ~= 0);
-if numel(boundaries) ~= 2
-    error('rangeSFTDataset:RCBoundaryCount', ...
-        '连续H-L-H块必须包含两个边界。');
-end
-
-power_h = zeros(2, 1);
-power_l = zeros(2, 1);
-for idx = 1:2
-    boundary = boundaries(idx);
-    left = max(1, boundary-buffer+1):boundary;
-    right = boundary+1:min(size(RC_H, 2), boundary+buffer);
-    if mode_mask(boundary)
-        h_indices = left;
-        l_indices = right;
-    else
-        l_indices = left;
-        h_indices = right;
-    end
-    power_h(idx) = mean(abs(RC_H(:, h_indices)).^2, 'all');
-    power_l(idx) = mean(abs(RC_L(:, l_indices)).^2, 'all');
-end
-pooled_h = mean(power_h);
-pooled_l = mean(power_l);
-if ~isfinite(pooled_h) || ~isfinite(pooled_l) || ...
-        pooled_h < 0 || pooled_l < 0
-    error('rangeSFTDataset:RCPower', ...
-        'H/L边界功率包含无效值。');
-end
-if pooled_h <= 1e-12
-    scale_factor = 1;
-else
-    scale_factor = sqrt((pooled_l + eps) / (pooled_h + eps));
-end
-RC_H_aligned = RC_H * scale_factor;
-RC_mix = zeros(size(RC_H), 'like', RC_H);
-RC_mix(:, mode_mask) = RC_H_aligned(:, mode_mask);
-RC_mix(:, ~mode_mask) = RC_L(:, ~mode_mask);
-info = struct( ...
-    "boundaries", boundaries, ...
-    "scale_factor", scale_factor, ...
-    "power_H", pooled_h, ...
-    "power_L", pooled_l, ...
-    "boundary_jump_db", 10 * log10( ...
-    (pooled_h * scale_factor ^ 2 + eps) / (pooled_l + eps)));
-end
-
-function image_roi = focus_base_rc(RC_base, S60, roi_size)
-%FOCUS_BASE_RC 从60MHz基网格RC生成线性幅度ROI。
-if ~isequal(size(RC_base), [S60.nrn, S60.nan])
-    error('rangeSFTDataset:FocusRCSize', ...
-        '成像RC必须位于FS60基网格。');
-end
-RCMC_out = RCMC(RC_base, S60.lambda, S60.fnrn, S60.fnan, ...
-    S60.R0, S60.C, S60.v);
-image_complex = SAR_Imaging(RCMC_out, S60.lambda, S60.Fs, ...
-    S60.R0, S60.C, S60.v, S60.tnan, S60.Ta, S60.prf);
-row_start = S60.nrn / 2 - S60.R_total / 2 + 1;
-row_end = S60.nrn / 2 + S60.R_total / 2;
-column_start = S60.nan / 2 - S60.A_num / 2;
-column_end = S60.nan / 2 + S60.A_num / 2 - 1;
-full_roi = abs(image_complex(row_start:row_end, ...
-    column_start:column_end));
-image_roi = crop_center(full_roi, roi_size);
-end
-
-function image_roi = generate_gt_image(signal, S60, roi_size)
-%GENERATE_GT_IMAGE 对未量化60MHz复回波执行标准RD成像。
-RC_gt = Range_Compress(signal, S60.fc, S60.tnrn, S60.gama, ...
-    S60.R0, S60.C, S60.Fs, S60.Tp);
-image_roi = focus_base_rc(RC_gt, S60, roi_size);
-end
-
 function columns = frame_columns(sequence, frame_idx)
 %FRAME_COLUMNS 返回第frame_idx帧在2224列块中的1200列索引。
 start_idx = 1 + (frame_idx - 1) * sequence.step;
@@ -781,18 +551,6 @@ if columns(end) > sequence.block_width
     error('rangeSFTDataset:FrameColumns', ...
         '第%d帧超出连续回波块。', frame_idx);
 end
-end
-
-function output = crop_center(input, target_size)
-%CROP_CENTER 从二维图像中心裁出target_size×target_size区域。
-row_start = floor((size(input, 1) - target_size) / 2) + 1;
-column_start = floor((size(input, 2) - target_size) / 2) + 1;
-if row_start < 1 || column_start < 1
-    error('rangeSFTDataset:CropCenter', ...
-        '中心裁剪尺寸超过输入图像。');
-end
-output = input(row_start:row_start+target_size-1, ...
-    column_start:column_start+target_size-1);
 end
 
 function output = to_uint8_image(input)

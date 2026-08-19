@@ -100,7 +100,8 @@ for scene_idx = 1:numel(scenes)
         parameter_key = parameter_keys(parameter_idx); % MAT条目的唯一可读键
         pair = make_range_sft_pair(parameters);
         % 有效倍率由round(q*N)后的真实尺寸决定，并用于Nyquist检查。
-        [grid_h, grid_l] = resolve_pair_grids(pair, cfg, S60);
+        [grid_h, grid_l] = resolve_pair_grids( ...
+            pair, cfg.sequence, S60, cfg.nyquist_margin);
         need_gt = isempty(fieldnames(gt_stats)); % 仅场景首个参数需要同步计算GT
         work_directory = fullfile(WORK_ROOT, scene_key, parameter_key);
 
@@ -199,7 +200,7 @@ keys = strings(height(parameters), 1);
 for idx = 1:height(parameters)
     value = parameter_struct(parameters(idx, :));
     pair = make_range_sft_pair(value);
-    resolve_pair_grids(pair, cfg, S60);
+    resolve_pair_grids(pair, cfg.sequence, S60, cfg.nyquist_margin);
     keys(idx) = make_parameter_key(value, protocol);
 end
 if numel(unique(keys)) ~= numel(keys)
@@ -229,185 +230,6 @@ parameters = struct( ...
     "FrOverBr", double(row.FrOverBr), ...
     "FaOverBa", double(row.FaOverBa), ...
     "Phi0", double(row.Phi0));
-end
-
-function pair = make_range_sft_pair(parameters)
-%MAKE_RANGE_SFT_PAIR 构造共享阈值参数的H/L距离向采集配置。
-% H和L只有q_total不同；STR、fr/Br、fa/Ba、phi0完全相同。
-threshold = struct( ...
-    "STR_dB", parameters.STRdB, ...
-    "fr_over_Br", parameters.FrOverBr, ...
-    "fa_over_Ba", parameters.FaOverBa, ...
-    "phi0", parameters.Phi0);
-base = struct("method", "Range_2D_SFT", ...
-    "threshold", threshold, "time_origin", "block_global");
-pair = struct("method", "Range_2D_SFT", ...
-    "q_high", parameters.QHigh, "q_low", parameters.QLow, ...
-    "H", base, "L", base);
-pair.H.q_total = parameters.QHigh;
-pair.L.q_total = parameters.QLow;
-end
-
-function [grid_h, grid_l] = resolve_pair_grids(pair, cfg, S60)
-%RESOLVE_PAIR_GRIDS 计算H/L实际整数网格并检查共同Nyquist上限。
-% 输出grid_h/grid_l记录有效倍率、上采样尺寸、Fs和PRF，供审计保存。
-input_size = [cfg.sequence.signal_height, cfg.sequence.block_width];
-grid_h = resolve_range_grid(pair.H.q_total, input_size, S60);
-grid_l = resolve_range_grid(pair.L.q_total, input_size, S60);
-azimuth_bandwidth = resolve_azimuth_bandwidth(S60);
-fr_limit = cfg.nyquist_margin * ...
-    min(grid_h.Fs_up, grid_l.Fs_up) / (2 * S60.B);
-fa_limit = cfg.nyquist_margin * ...
-    min(grid_h.PRF_up, grid_l.PRF_up) / (2 * azimuth_bandwidth);
-fr = pair.H.threshold.fr_over_Br;
-fa = pair.H.threshold.fa_over_Ba;
-if fr >= fr_limit || fa >= fa_limit
-    error('scenePercentiles:SFTNyquistViolation', ...
-        ['SFT频率必须满足fr/Br<%.12g、fa/Ba<%.12g；' ...
-        '当前为%.12g、%.12g。'], fr_limit, fa_limit, fr, fa);
-end
-end
-
-function bandwidth = resolve_azimuth_bandwidth(S60)
-%RESOLVE_AZIMUTH_BANDWIDTH 从FS60参数中解析方位带宽Ba。
-% 优先使用Ba，其次兼容Bd；若只有天线孔径Da则按2v/Da换算。
-if isfield(S60, "Ba")
-    bandwidth = S60.Ba;
-elseif isfield(S60, "Bd")
-    bandwidth = S60.Bd;
-elseif isfield(S60, "Da")
-    bandwidth = 2 * S60.v / S60.Da;
-else
-    error('scenePercentiles:MissingAzimuthBandwidth', ...
-        'FS60参数必须包含Ba、Bd或Da。');
-end
-end
-
-function grid = resolve_range_grid(q_range, input_size, S60)
-%RESOLVE_RANGE_GRID 将名义距离倍率映射为可执行的整数采样网格。
-% 输入q_range为名义倍率，input_size=[距离点数, 方位点数]。
-% 小数倍率使用round(q*N)；输出中的q_range_eff才是实际成像倍率。
-if q_range < 1 || ~isfinite(q_range)
-    error('scenePercentiles:InvalidSamplingFactor', ...
-        '距离向采样倍率必须是不小于1的有限数。');
-end
-nr_up = round(q_range * input_size(1)); % FFT补零后的整数距离维尺寸
-q_range_eff = nr_up / input_size(1);    % 由整数尺寸反算的有效倍率
-grid = struct( ...
-    "q_range", q_range, ...
-    "q_azimuth", 1, ...
-    "q_range_eff", q_range_eff, ...
-    "q_azimuth_eff", 1, ...
-    "q_total_eff", q_range_eff, ...
-    "input_size", input_size, ...
-    "upsampled_size", [nr_up, input_size(2)], ...
-    "Fs_up", q_range_eff * S60.Fs, ...
-    "PRF_up", S60.prf);
-end
-
-function RC_base = generate_range_2dsft_rc(signal, S60, acquisition)
-%GENERATE_RANGE_2DSFT_RC 生成一条采集分支的60MHz基网格RC。
-% signal：1200×2224的60MHz复回波；acquisition：倍率和2D-SFT参数。
-% 流程：距离FFT上采样→2D-SFT阈值→复1-bit量化→RC→中心频谱回投影。
-% 输出RC_base与原始signal同尺寸，保证H/L能够逐列能量对齐和混合。
-grid = resolve_range_grid(acquisition.q_total, size(signal), S60);
-signal_up = upsample_range_fft(signal, grid.upsampled_size(1)); % 带限插值回波
-threshold = build_2dsft_threshold(signal_up, grid, ...
-    acquisition.threshold, S60);
-channel_1bit = quantize_1bit(signal_up, threshold); % I/Q各保留一个符号位
-
-% 上采样后必须使用对应Fs_up重建距离快时间轴。
-tnrn_up = 2 * S60.R0 / S60.C + ...
-    ((0:size(signal_up, 1)-1).' - floor(size(signal_up, 1) / 2)) ...
-    / grid.Fs_up;
-RC_up = Range_Compress(channel_1bit, S60.fc, tnrn_up, S60.gama, ...
-    S60.R0, S60.C, grid.Fs_up, S60.Tp);
-RC_base = crop_range_spectrum(RC_up, size(signal, 1));
-if ~isequal(size(RC_base), size(signal))
-    error('scenePercentiles:BaseRCSize', ...
-        '距离压缩结果无法投影回60MHz基网格。');
-end
-end
-
-function signal_up = upsample_range_fft(signal, target_rows)
-%UPSAMPLE_RANGE_FFT 仅沿距离维进行中心频谱补零带限插值。
-% target_rows是round(q*Nr)后的整数长度；方位维完全不改变。
-% IFFT后乘有效倍率，补偿零填充导致的离散变换幅度变化。
-current_rows = size(signal, 1);
-if target_rows < current_rows
-    error('scenePercentiles:UpsampleSize', ...
-        '上采样目标行数不能小于输入行数。');
-elseif target_rows == current_rows
-    signal_up = signal;
-    return;
-end
-spectrum = fftshift(fft(signal, [], 1), 1); % 距离频谱，零频移到中心
-pad_total = target_rows - current_rows;
-pad_top = floor(pad_total / 2);       % 奇数补零时上侧取floor
-pad_bottom = pad_total - pad_top;     % 剩余零点放在下侧
-spectrum_up = [ ...
-    zeros(pad_top, size(signal, 2), 'like', spectrum); ...
-    spectrum; ...
-    zeros(pad_bottom, size(signal, 2), 'like', spectrum)];
-signal_up = ifft(ifftshift(spectrum_up, 1), [], 1) ...
-    * (target_rows / current_rows);
-end
-
-function threshold = build_2dsft_threshold(signal_up, grid, parameters, S60)
-%BUILD_2DSFT_THRESHOLD 在上采样网格上构造确定性的二维单频复阈值。
-% fast-time对应距离维，slow-time对应方位维；二者相位相加后取复指数。
-% STR定义为信号尺度与阈值幅度之比，H/L共享归一化频率和初相位。
-sigma_hat = sqrt(2 / pi) * mean(abs(signal_up(:))); % 当前分支信号尺度估计
-amplitude = sigma_hat / (10 ^ (parameters.STR_dB / 20)); % 阈值复幅度
-fr_hz = parameters.fr_over_Br * S60.B; % 距离归一化频率转物理Hz
-fa_hz = parameters.fa_over_Ba * resolve_azimuth_bandwidth(S60); % 方位Hz
-
-% block_global时间原点：每个2224列连续块共用同一方位坐标。
-fast_time = ((0:size(signal_up, 1)-1).' ...
-    - floor(size(signal_up, 1) / 2)) / grid.Fs_up;
-slow_time = ((0:size(signal_up, 2)-1) ...
-    - floor(size(signal_up, 2) / 2)) / grid.PRF_up;
-phase_range = 2 * pi * fr_hz * fast_time;   % Nr_up×1距离相位
-phase_azimuth = 2 * pi * fa_hz * slow_time; % 1×Na方位相位
-threshold = amplitude * exp(1i * ...
-    (phase_range + phase_azimuth + parameters.phi0));
-end
-
-function output = quantize_1bit(signal, threshold)
-%QUANTIZE_1BIT 对复回波I/Q分别执行“信号+阈值”的符号判决。
-% 输出字母表固定为实部±1、虚部±1；零值按+1处理。
-if ~isequal(size(signal), size(threshold))
-    error('scenePercentiles:ThresholdSize', ...
-        '回波和2D-SFT阈值尺寸不一致。');
-end
-real_part = ones(size(signal), 'like', real(signal));
-imag_part = ones(size(signal), 'like', real(signal));
-real_part(real(signal) + real(threshold) < 0) = -1;
-imag_part(imag(signal) + imag(threshold) < 0) = -1;
-output = complex(real_part, imag_part);
-end
-
-function output = crop_range_spectrum(input, target_rows)
-%CROP_RANGE_SPECTRUM 将上采样RC投影回原始60MHz距离网格。
-% 只裁距离中心频谱，不改变方位维；偶数和奇数目标尺寸分别处理。
-current_rows = size(input, 1);
-if target_rows > current_rows
-    error('scenePercentiles:CropSize', ...
-        '频谱裁剪目标不能大于当前距离维。');
-elseif target_rows == current_rows
-    output = input;
-    return;
-end
-spectrum = fftshift(fft(input, [], 1), 1); % 上采样RC的距离频谱
-center = floor(current_rows / 2) + 1;      % fftshift后的中心索引
-half_width = floor(target_rows / 2);       % 目标频谱半宽
-if mod(target_rows, 2) == 0
-    indices = center-half_width:center+half_width-1;
-else
-    indices = center-half_width:center+half_width;
-end
-spectrum = spectrum(indices, :);
-output = ifft(ifftshift(spectrum, 1), [], 1);
 end
 
 function mask = build_hlh_mask(sequence)
@@ -457,103 +279,6 @@ if size(signal60, 1) < S60.nrn
         '降至60MHz后的距离维长度不足。');
 end
 signal60 = signal60(1:S60.nrn, :);
-end
-
-function [RC_mix, info] = align_and_mix_rc(RC_H, RC_L, mode_mask, buffer)
-%ALIGN_AND_MIX_RC 用双边界单一gamma完成H/L能量对齐和空间拼接。
-% RC_H/RC_L必须位于同一60MHz基网格；mode_mask=true的位置选择H。
-% 输出RC_mix用于流程审计，info中的scale_factor用于纯H统计量对齐。
-if ~isequal(size(RC_H), size(RC_L))
-    error('scenePercentiles:RCSizeMismatch', 'H/L RC尺寸不一致。');
-end
-mode_mask = logical(mode_mask(:).');
-if numel(mode_mask) ~= size(RC_H, 2)
-    error('scenePercentiles:RCMaskLength', ...
-        'H-L-H掩膜长度必须等于RC列数。');
-end
-boundaries = find(diff(mode_mask) ~= 0); % H→L和L→H两个空间边界
-if numel(boundaries) ~= 2
-    error('scenePercentiles:RCBoundaryCount', ...
-        'H-L-H连续块必须包含两个边界。');
-end
-
-power_h = zeros(numel(boundaries), 1); % 每个边界H侧的平均RC功率
-power_l = zeros(numel(boundaries), 1); % 每个边界L侧的平均RC功率
-for idx = 1:numel(boundaries)
-    boundary = boundaries(idx);
-    left = max(1, boundary-buffer+1):boundary;
-    right = boundary+1:min(size(RC_H, 2), boundary+buffer);
-    if mode_mask(boundary)
-        h_indices = left;
-        l_indices = right;
-    else
-        l_indices = left;
-        h_indices = right;
-    end
-    power_h(idx) = mean(abs(RC_H(:, h_indices)).^2, 'all');
-    power_l(idx) = mean(abs(RC_L(:, l_indices)).^2, 'all');
-end
-pooled_h = mean(power_h); % 两个边界等权汇总后的H功率
-pooled_l = mean(power_l); % 两个边界等权汇总后的L功率
-if pooled_h <= 1e-12
-    scale_factor = 1;
-else
-    % gamma=sqrt(P_L/P_H)，使缩放后H功率与L处于同一强度尺度。
-    scale_factor = sqrt((pooled_l + eps) / (pooled_h + eps));
-end
-RC_H_aligned = RC_H * scale_factor;
-RC_mix = zeros(size(RC_H), 'like', RC_H);
-RC_mix(:, mode_mask) = RC_H_aligned(:, mode_mask);
-RC_mix(:, ~mode_mask) = RC_L(:, ~mode_mask);
-info = struct( ...
-    "boundaries", boundaries, ...
-    "scale_factor", scale_factor, ...
-    "power_H", pooled_h, ...
-    "power_L", pooled_l, ...
-    "boundary_jump_db", 10 * log10( ...
-    (pooled_h * scale_factor ^ 2 + eps) / (pooled_l + eps)));
-end
-
-function image_roi = focus_base_rc(RC_base, S60, roi_size)
-%FOCUS_BASE_RC 从60MHz基网格RC生成指定尺寸的线性幅度ROI。
-% 仅调用允许的RCMC和SAR_Imaging；不做归一化、对数显示或均衡化。
-% 输出image_roi为实数非负幅度图，是JointHL分位数的直接像素来源。
-if ~isequal(size(RC_base), [S60.nrn, S60.nan])
-    error('scenePercentiles:FocusRCSize', ...
-        '成像RC必须位于FS60基网格。');
-end
-RCMC_out = RCMC(RC_base, S60.lambda, S60.fnrn, S60.fnan, ...
-    S60.R0, S60.C, S60.v);
-image_complex = SAR_Imaging(RCMC_out, S60.lambda, S60.Fs, ...
-    S60.R0, S60.C, S60.v, S60.tnan, S60.Ta, S60.prf);
-row_start = S60.nrn / 2 - S60.R_total / 2 + 1;
-row_end = S60.nrn / 2 + S60.R_total / 2;
-column_start = S60.nan / 2 - S60.A_num / 2;
-column_end = S60.nan / 2 + S60.A_num / 2 - 1;
-full_roi = abs(image_complex(row_start:row_end, ... % 标准600×600有效幅度区
-    column_start:column_end));
-image_roi = crop_center(full_roi, roi_size);
-end
-
-function image_roi = generate_gt_image(signal, S60, roi_size)
-%GENERATE_GT_IMAGE 对未量化60MHz复回波执行标准成像。
-% GT只依赖原始回波和成像参数，与H/L倍率及2D-SFT参数无关。
-RC_gt = Range_Compress(signal, S60.fc, S60.tnrn, S60.gama, ...
-    S60.R0, S60.C, S60.Fs, S60.Tp);
-image_roi = focus_base_rc(RC_gt, S60, roi_size);
-end
-
-function output = crop_center(input, target_size)
-%CROP_CENTER 从二维图像中心裁出target_size×target_size区域。
-% 分位数脚本传入600时通常保持原ROI；函数保留尺寸检查以防协议变化。
-row_start = floor((size(input, 1) - target_size) / 2) + 1;
-column_start = floor((size(input, 2) - target_size) / 2) + 1;
-if row_start < 1 || column_start < 1
-    error('scenePercentiles:CropCenterSize', ...
-        '中心裁剪尺寸超过输入图像。');
-end
-output = input(row_start:row_start+target_size-1, ...
-    column_start:column_start+target_size-1);
 end
 
 function result = process_scene_parameter(cfg, S60, scene_manifest, ...
