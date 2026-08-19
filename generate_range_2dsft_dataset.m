@@ -30,6 +30,7 @@ PARAMETERS = struct( ...
 NYQUIST_MARGIN = 0.98; % SFT频率相对共同Nyquist上限保留2%安全余量
 ENERGY_BUFFER = 64;    % 两个H/L边界每侧用于功率估计的RC列数
 SEQUENCE_STRIDE_FRAMES = 3;
+MAX_GT_CACHE_FRAMES = 32; % 单个rstart文件内最多保留的最终uint8 GT帧
 
 % 该结构必须与场景分位数统计协议中的sequence逐字段一致。
 SEQUENCE = struct( ...
@@ -110,6 +111,7 @@ for scene_idx = 1:numel(SCENE_NAMES)
 
         fprintf('  [%d/%d] %s：%d条序列。\n', ...
             file_idx, numel(files), file.name, numel(starts));
+        gt_cache = init_gt_cache(MAX_GT_CACHE_FRAMES);
         for start_idx = 1:numel(starts)
             c_start = starts(start_idx);
             sequence_name = make_sequence_name( ...
@@ -127,15 +129,16 @@ for scene_idx = 1:numel(SCENE_NAMES)
             signal60 = raw_data(row_indices, column_indices);
             validate_echo_block(signal60, SEQUENCE, file_path, c_start);
 
-            [lq_sequence, gt_sequence] = generate_sequence( ...
+            [lq_sequence, gt_sequence, gt_cache] = generate_sequence( ...
                 signal60, S60, pair, mode_mask, SEQUENCE, ...
                 ENERGY_BUFFER, stats.Input, stats.GT, ...
-                carrier_h, carrier_l);
+                carrier_h, carrier_l, c_start, gt_cache);
             save_sequence_png( ...
                 LQ_ROOT, GT_ROOT, sequence_name, ...
                 lq_sequence, gt_sequence);
             generated_count = generated_count + 1;
         end
+        print_gt_cache_summary(gt_cache, file.name);
         clear raw_data;
     end
 end
@@ -502,9 +505,9 @@ if ~isnumeric(signal) || isreal(signal) || ...
 end
 end
 
-function [lq_sequence, gt_sequence] = generate_sequence( ...
+function [lq_sequence, gt_sequence, gt_cache] = generate_sequence( ...
         signal, S60, pair, mask, sequence, buffer, input_stats, gt_stats, ...
-        carrier_h, carrier_l)
+        carrier_h, carrier_l, c_start, gt_cache)
 %GENERATE_SEQUENCE 由一个连续回波块生成配对的九帧LQ和GT。
 RC_H = generate_range_2dsft_rc(signal, S60, pair.H, carrier_h);
 RC_L = generate_range_2dsft_rc(signal, S60, pair.L, carrier_l);
@@ -516,18 +519,79 @@ gt_sequence = zeros(size(lq_sequence), 'uint8');
 for frame_idx = 1:sequence.n_frames
     columns = frame_columns(sequence, frame_idx);
     lq_roi = focus_base_rc(RC_mix(:, columns), S60, sequence.roi_size);
-    gt_roi = generate_gt_image(signal(:, columns), S60, sequence.roi_size);
+    global_frame_start = c_start + (frame_idx - 1) * sequence.step;
+    [gt_frame, gt_cache] = get_gt_frame_cached( ...
+        signal(:, columns), S60, sequence, gt_stats, ...
+        global_frame_start, gt_cache);
 
     % 必须先在600×600 ROI上使用生产分位数归一化，再中心裁剪到512。
     lq_normalized = minmaxnormalize_image( ...
         lq_roi, input_stats.VMax, input_stats.VMin);
-    gt_normalized = minmaxnormalize_image( ...
-        gt_roi, gt_stats.VMax, gt_stats.VMin);
     lq_sequence(:, :, frame_idx) = to_uint8_image( ...
         crop_center(lq_normalized, sequence.patch_size));
-    gt_sequence(:, :, frame_idx) = to_uint8_image( ...
-        crop_center(gt_normalized, sequence.patch_size));
+    gt_sequence(:, :, frame_idx) = gt_frame;
 end
+end
+
+function cache = init_gt_cache(max_frames)
+%INIT_GT_CACHE 初始化单个rstart轨迹使用的有界GT帧缓存。
+if ~isscalar(max_frames) || max_frames < 1 || max_frames ~= fix(max_frames)
+    error('rangeSFTDataset:GTCacheSize', ...
+        'GT缓存容量必须是正整数。');
+end
+cache = struct( ...
+    "max_frames", double(max_frames), ...
+    "keys", nan(1, max_frames), ...
+    "frames", {cell(1, max_frames)}, ...
+    "count", 0, ...
+    "next_slot", 1, ...
+    "hits", 0, ...
+    "misses", 0);
+end
+
+function [gt_frame, cache] = get_gt_frame_cached( ...
+        signal_frame, S60, sequence, gt_stats, global_frame_start, cache)
+%GET_GT_FRAME_CACHED 按轨迹内全局帧起点复用最终uint8 GT帧。
+if ~isscalar(global_frame_start) || ~isfinite(global_frame_start) || ...
+        global_frame_start < 1 || global_frame_start ~= fix(global_frame_start)
+    error('rangeSFTDataset:GTCacheKey', ...
+        'GT缓存键必须是正整数的轨迹全局帧起点。');
+end
+slot = find(cache.keys(1:cache.count) == global_frame_start, 1);
+if ~isempty(slot)
+    gt_frame = cache.frames{slot};
+    cache.hits = cache.hits + 1;
+    return;
+end
+
+gt_roi = generate_gt_image(signal_frame, S60, sequence.roi_size);
+gt_normalized = minmaxnormalize_image( ...
+    gt_roi, gt_stats.VMax, gt_stats.VMin);
+gt_frame = to_uint8_image( ...
+    crop_center(gt_normalized, sequence.patch_size));
+
+if cache.count < cache.max_frames
+    cache.count = cache.count + 1;
+    slot = cache.count;
+else
+    slot = cache.next_slot;
+    cache.next_slot = mod(cache.next_slot, cache.max_frames) + 1;
+end
+cache.keys(slot) = global_frame_start;
+cache.frames{slot} = gt_frame;
+cache.misses = cache.misses + 1;
+end
+
+function print_gt_cache_summary(cache, file_name)
+%PRINT_GT_CACHE_SUMMARY 每条rstart轨迹结束时汇总GT缓存命中情况。
+total = cache.hits + cache.misses;
+if total == 0
+    hit_rate = 0;
+else
+    hit_rate = cache.hits / total;
+end
+fprintf('    GT cache %s：hits=%d, misses=%d, hit rate=%.1f%%。\n', ...
+    file_name, cache.hits, cache.misses, 100 * hit_rate);
 end
 
 function mask = build_hlh_mask(sequence)
