@@ -2,7 +2,7 @@
 .workbuddy/
 assert/
 
-prompt.md
+prompt*.md
 
 # 参考文献文件夹
 papers/
