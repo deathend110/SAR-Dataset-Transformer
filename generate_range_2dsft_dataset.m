@@ -31,6 +31,7 @@ NYQUIST_MARGIN = 0.98; % SFT频率相对共同Nyquist上限保留2%安全余量
 ENERGY_BUFFER = 64;    % 两个H/L边界每侧用于功率估计的RC列数
 SEQUENCE_STRIDE_FRAMES = 3;
 MAX_GT_CACHE_FRAMES = 32; % 单个rstart文件内最多保留的最终uint8 GT帧
+ENABLE_RANGE_FFT_CACHE = false; % 严格bitwise验证通过后才可改为true
 
 % 该结构必须与场景分位数统计协议中的sequence逐字段一致。
 SEQUENCE = struct( ...
@@ -52,6 +53,8 @@ OUTPUT_PARENT = fullfile(REPO_ROOT, "dataset_range_2dsft");
 
 %% ========================== 配置与统计预检 ===============================
 addpath(REPO_ROOT);
+range_fft_cache_enabled = evaluate_range_fft_cache_flag( ...
+    ENABLE_RANGE_FFT_CACHE);
 validate_public_dependencies(REPO_ROOT);
 validate_configuration(PARAMETERS, SEQUENCE, ...
     SEQUENCE_STRIDE_FRAMES, ENERGY_BUFFER);
@@ -112,6 +115,8 @@ for scene_idx = 1:numel(SCENE_NAMES)
         fprintf('  [%d/%d] %s：%d条序列。\n', ...
             file_idx, numel(files), file.name, numel(starts));
         gt_cache = init_gt_cache(MAX_GT_CACHE_FRAMES);
+        range_fft_cache = init_range_fft_cache();
+        range_fft_totals = init_range_fft_totals();
         for start_idx = 1:numel(starts)
             c_start = starts(start_idx);
             sequence_name = make_sequence_name( ...
@@ -129,16 +134,36 @@ for scene_idx = 1:numel(SCENE_NAMES)
             signal60 = raw_data(row_indices, column_indices);
             validate_echo_block(signal60, SEQUENCE, file_path, c_start);
 
+            if range_fft_cache_enabled
+                [signal_up_h, range_fft_cache.H, stats_h] = ...
+                    update_range_fft_cache( ...
+                    signal60, c_start, grid_h.upsampled_size(1), ...
+                    range_fft_cache.H);
+                [signal_up_l, range_fft_cache.L, stats_l] = ...
+                    update_range_fft_cache( ...
+                    signal60, c_start, grid_l.upsampled_size(1), ...
+                    range_fft_cache.L);
+                range_fft_totals = add_range_fft_totals( ...
+                    range_fft_totals, stats_h, stats_l);
+            else
+                signal_up_h = [];
+                signal_up_l = [];
+            end
+
             [lq_sequence, gt_sequence, gt_cache] = generate_sequence( ...
                 signal60, S60, pair, mode_mask, SEQUENCE, ...
                 ENERGY_BUFFER, stats.Input, stats.GT, ...
-                carrier_h, carrier_l, c_start, gt_cache);
+                carrier_h, carrier_l, c_start, gt_cache, ...
+                signal_up_h, signal_up_l);
             save_sequence_png( ...
                 LQ_ROOT, GT_ROOT, sequence_name, ...
                 lq_sequence, gt_sequence);
             generated_count = generated_count + 1;
+            clear signal_up_h signal_up_l
         end
         print_gt_cache_summary(gt_cache, file.name);
+        print_range_fft_summary(range_fft_totals, file.name, ...
+            range_fft_cache_enabled);
         clear raw_data;
     end
 end
@@ -507,10 +532,13 @@ end
 
 function [lq_sequence, gt_sequence, gt_cache] = generate_sequence( ...
         signal, S60, pair, mask, sequence, buffer, input_stats, gt_stats, ...
-        carrier_h, carrier_l, c_start, gt_cache)
+        carrier_h, carrier_l, c_start, gt_cache, ...
+        precomputed_signal_up_h, precomputed_signal_up_l)
 %GENERATE_SEQUENCE 由一个连续回波块生成配对的九帧LQ和GT。
-RC_H = generate_range_2dsft_rc(signal, S60, pair.H, carrier_h);
-RC_L = generate_range_2dsft_rc(signal, S60, pair.L, carrier_l);
+RC_H = generate_range_2dsft_rc( ...
+    signal, S60, pair.H, carrier_h, precomputed_signal_up_h);
+RC_L = generate_range_2dsft_rc( ...
+    signal, S60, pair.L, carrier_l, precomputed_signal_up_l);
 [RC_mix, ~] = align_and_mix_rc(RC_H, RC_L, mask.full, buffer);
 
 lq_sequence = zeros(sequence.patch_size, sequence.patch_size, ...
@@ -592,6 +620,122 @@ else
 end
 fprintf('    GT cache %s：hits=%d, misses=%d, hit rate=%.1f%%。\n', ...
     file_name, cache.hits, cache.misses, 100 * hit_rate);
+end
+
+function enabled = evaluate_range_fft_cache_flag(value)
+%EVALUATE_RANGE_FFT_CACHE_FLAG 将配置开关转换为单一逻辑标量。
+if ~isscalar(value) || ~islogical(value)
+    error('rangeSFTDataset:RangeFFTCacheFlag', ...
+        'ENABLE_RANGE_FFT_CACHE必须是逻辑标量。');
+end
+enabled = value;
+end
+
+function cache = init_range_fft_cache()
+%INIT_RANGE_FFT_CACHE 初始化单个rstart文件的H/L距离FFT缓存。
+empty_branch = struct( ...
+    "valid", false, "c_start", nan, "target_rows", nan, ...
+    "input_width", nan, "signal_up", []);
+cache = struct("H", empty_branch, "L", empty_branch);
+end
+
+function totals = init_range_fft_totals()
+%INIT_RANGE_FFT_TOTALS 初始化距离FFT缓存的列级审计计数。
+totals = struct( ...
+    "full_fft_columns", 0, "reused_columns", 0, ...
+    "newly_fft_columns", 0);
+end
+
+function [signal_up, cache, stats] = update_range_fft_cache( ...
+        signal, c_start, target_rows, cache)
+%UPDATE_RANGE_FFT_CACHE 按真实轨迹区间拼接当前距离FFT结果。
+% 仅复用signal_up列；阈值、量化、距离压缩及后续流程每条序列重新执行。
+if ~isscalar(c_start) || ~isfinite(c_start) || ...
+        c_start < 1 || c_start ~= fix(c_start)
+    error('rangeSFTDataset:RangeFFTCacheKey', ...
+        '距离FFT缓存键必须是正整数的轨迹全局列起点。');
+end
+if ~isscalar(target_rows) || ~isfinite(target_rows) || ...
+        target_rows < size(signal, 1) || target_rows ~= fix(target_rows)
+    error('rangeSFTDataset:RangeFFTCacheRows', ...
+        '距离FFT缓存目标行数必须是不小于输入行数的整数。');
+end
+input_width = size(signal, 2);
+stats = struct("full_fft_columns", 0, "reused_columns", 0, ...
+    "newly_fft_columns", 0);
+
+if ~cache.valid || cache.target_rows ~= target_rows || ...
+        cache.input_width ~= input_width || isempty(cache.signal_up)
+    signal_up = upsample_range_fft(signal, target_rows);
+    stats.full_fft_columns = input_width;
+    stats.newly_fft_columns = input_width;
+    cache.valid = true;
+    cache.c_start = c_start;
+    cache.target_rows = target_rows;
+    cache.input_width = input_width;
+    cache.signal_up = signal_up;
+    return;
+end
+
+previous_start = cache.c_start;
+previous_end = previous_start + cache.input_width - 1;
+current_end = c_start + input_width - 1;
+overlap_start = max(previous_start, c_start);
+overlap_end = min(previous_end, current_end);
+overlap = overlap_end - overlap_start + 1;
+if overlap <= 0
+    signal_up = upsample_range_fft(signal, target_rows);
+    stats.full_fft_columns = input_width;
+    stats.newly_fft_columns = input_width;
+else
+    signal_up = zeros(target_rows, input_width, 'like', cache.signal_up);
+    current_overlap = (overlap_start - c_start + 1): ...
+        (overlap_end - c_start + 1);
+    previous_overlap = (overlap_start - previous_start + 1): ...
+        (overlap_end - previous_start + 1);
+    signal_up(:, current_overlap) = cache.signal_up(:, previous_overlap);
+    new_columns = true(1, input_width);
+    new_columns(current_overlap) = false;
+    if any(new_columns)
+        signal_up(:, new_columns) = upsample_range_fft( ...
+            signal(:, new_columns), target_rows);
+    end
+    stats.reused_columns = overlap;
+    stats.newly_fft_columns = input_width - overlap;
+end
+
+cache.valid = true;
+cache.c_start = c_start;
+cache.target_rows = target_rows;
+cache.input_width = input_width;
+cache.signal_up = signal_up;
+end
+
+function totals = add_range_fft_totals(totals, stats_h, stats_l)
+%ADD_RANGE_FFT_TOTALS 汇总H/L两套缓存的列级统计。
+totals.full_fft_columns = totals.full_fft_columns + ...
+    stats_h.full_fft_columns + stats_l.full_fft_columns;
+totals.reused_columns = totals.reused_columns + ...
+    stats_h.reused_columns + stats_l.reused_columns;
+totals.newly_fft_columns = totals.newly_fft_columns + ...
+    stats_h.newly_fft_columns + stats_l.newly_fft_columns;
+end
+
+function print_range_fft_summary(totals, file_name, enabled)
+%PRINT_RANGE_FFT_SUMMARY 每条rstart轨迹结束时汇总距离FFT缓存列数。
+if ~enabled
+    return;
+end
+total_columns = totals.full_fft_columns + totals.reused_columns;
+if total_columns == 0
+    reuse_rate = 0;
+else
+    reuse_rate = totals.reused_columns / total_columns;
+end
+fprintf(['    Range FFT cache %s：full=%d, reused=%d, ' ...
+    'new=%d, reuse rate=%.1f%%。\n'], file_name, ...
+    totals.full_fft_columns, totals.reused_columns, ...
+    totals.newly_fft_columns, 100 * reuse_rate);
 end
 
 function mask = build_hlh_mask(sequence)

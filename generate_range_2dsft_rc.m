@@ -1,12 +1,27 @@
 function RC_base = generate_range_2dsft_rc( ...
-        signal, S60, acquisition, carrier)
+        signal, S60, acquisition, carrier, precomputed_signal_up)
 %GENERATE_RANGE_2DSFT_RC 生成一条采集分支的60MHz基网格距离压缩结果。
 % 流程：距离FFT上采样→二维SFT阈值→复1-bit量化→距离压缩→频谱回投影。
 if nargin < 4
     carrier = [];
 end
+if nargin < 5
+    precomputed_signal_up = [];
+end
 grid = resolve_range_grid(acquisition.q_total, size(signal), S60);
-signal_up = upsample_range_fft(signal, grid.upsampled_size(1));
+if isempty(precomputed_signal_up)
+    signal_up = upsample_range_fft(signal, grid.upsampled_size(1));
+else
+    expected_size = [grid.upsampled_size(1), size(signal, 2)];
+    if ~isnumeric(precomputed_signal_up) || ...
+        ~ismatrix(precomputed_signal_up) || ...
+            ~isequal(size(precomputed_signal_up), expected_size)
+        error('rangeSFT:PrecomputedSignalUpSize', ...
+            '预计算signal_up尺寸必须为[%d %d]。', ...
+            expected_size(1), expected_size(2));
+    end
+    signal_up = precomputed_signal_up;
+end
 threshold = build_2dsft_threshold( ...
     signal_up, grid, acquisition.threshold, S60, carrier);
 if ~isequal(size(signal_up), size(threshold))
