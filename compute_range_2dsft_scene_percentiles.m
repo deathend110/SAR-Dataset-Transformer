@@ -29,7 +29,7 @@ HIGH_PERCENTILE = 99.9;  % Robust min-max上限：99.9百分位
 ROI_SIZE = 600;          % 分位数必须在600×600原始幅度ROI上统计
 ENERGY_BUFFER = 64;      % 每个H/L边界两侧用于估计功率的RC列数
 WORK_ROOT_OVERRIDE = "C:\TEMP"; % 外部临时目录；为空时使用OUTPUT_ROOT/_work
-MAX_IN_MEMORY_PERCENTILE_GB = 6; % 精确memory backend的最大single数据量
+MAX_IN_MEMORY_PERCENTILE_GB = 8; % 精确memory backend的最大single数据量
 ENABLE_IN_MEMORY_PERCENTILE = true; % 数据量不超过上限时使用精确memory backend
 
 %% ========================== 仓库与公共配置 ===============================
