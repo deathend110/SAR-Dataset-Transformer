@@ -31,7 +31,7 @@ DATASET_PARENT = fullfile(REPO_ROOT, "dataset_range_2dsft");
 
 PARAMETER_KEY = "range_2d_sft_qh4_ql2_sm1_fr1p3_fa0p5_phi0_lp0p99_hp99p9_roi600_eb64";       % 留空自动发现唯一参数键子目录；多个时必须显式指定
 PARALLEL_WORKERS = 8;     % 并行worker数，0表示强制串行
-CHUNK_SIZE = 64;          % 每块序列数，块结束后保存一次checkpoint
+CHUNK_SIZE = 256;         % 增大块尺寸，减少table拼接与checkpoint写盘次数
 FORCE_RERUN = false;      % true时忽略已有checkpoint从头计算
 N_FRAMES = 9;             % 与生产协议一致的固定九帧
 
@@ -74,6 +74,8 @@ if ~FORCE_RERUN && isfile(checkpoint_path)
             '不能静默复用旧结果：%s。'], checkpoint_path);
     end
     results_table = loaded.results_table;
+    validate_checkpoint_results(results_table, all_names, scene_keys, ...
+        rstart_ids, cstart_ids, N_FRAMES);
     fprintf('从checkpoint恢复：%d条序列已完成。\n', height(results_table));
 % 进入elseif说明checkpoint存在但FORCE_RERUN=true，忽略旧结果
 elseif isfile(checkpoint_path)
@@ -82,10 +84,11 @@ end
 
 completed_names = string(results_table.SequenceName);
 pending_mask = ~ismember(all_names, completed_names);
-pending_names = all_names(pending_mask);
+pending_global_indices = find(pending_mask);
 total_count = numel(all_names);
-done_count = total_count - numel(pending_names);
-fprintf('待计算：%d条，已完成：%d条。\n', numel(pending_names), done_count);
+done_count = total_count - numel(pending_global_indices);
+fprintf('待计算：%d条，已完成：%d条。\n', ...
+    numel(pending_global_indices), done_count);
 
 %% ====================== 主循环：chunked parfor计算 =======================
 [use_parallel, workers_used] = setup_parallel_pool(PARALLEL_WORKERS);
@@ -95,10 +98,12 @@ else
     fprintf('串行计算，块大小%d。\n', CHUNK_SIZE);
 end
 
-for chunk_start = 1:CHUNK_SIZE:numel(pending_names)
-    chunk_indices = chunk_start:min(chunk_start + CHUNK_SIZE - 1, ...
-        numel(pending_names));
-    chunk_names = pending_names(chunk_indices);
+for chunk_start = 1:CHUNK_SIZE:numel(pending_global_indices)
+    % 块位置先映射回全局索引，保证断点恢复后名称与元数据仍严格对应
+    chunk_positions = chunk_start:min(chunk_start + CHUNK_SIZE - 1, ...
+        numel(pending_global_indices));
+    chunk_global_indices = pending_global_indices(chunk_positions);
+    chunk_names = all_names(chunk_global_indices);
     chunk_count = numel(chunk_names);
 
     % 块内预分配数值矩阵，parfor按行切片写入，避免循环内增长table
@@ -119,8 +124,9 @@ for chunk_start = 1:CHUNK_SIZE:numel(pending_names)
     end
 
     % 按块构造与累计table同构的行块后拼接，再原子保存checkpoint
-    chunk_rows = make_rows_table(chunk_names, scene_keys, rstart_ids, ...
-        cstart_ids, chunk_indices, psnr_block, ssim_block, N_FRAMES);
+    chunk_rows = make_rows_table(chunk_names, ...
+        scene_keys(chunk_global_indices), rstart_ids(chunk_global_indices), ...
+        cstart_ids(chunk_global_indices), psnr_block, ssim_block, N_FRAMES);
     results_table = [results_table; chunk_rows]; %#ok<AGROW>
     atomic_save_checkpoint(checkpoint_path, signature, results_table);
     done_count = done_count + chunk_count;
@@ -334,12 +340,81 @@ for frame_idx = 0:n_frames - 1
 end
 end
 
-function rows = make_rows_table(all_names, scene_keys, rstart_ids, ...
-        cstart_ids, chunk_indices, psnr_values, ssim_values, n_frames)
+function validate_checkpoint_results(results_table, all_names, scene_keys, ...
+        rstart_ids, cstart_ids, n_frames)
+%VALIDATE_CHECKPOINT_RESULTS 拒绝结构不完整或序列元数据错配的checkpoint。
+if ~istable(results_table)
+    error('rangeSFTMetrics:CheckpointTableType', ...
+        'checkpoint中的results_table不是table，不能继续恢复。');
+end
+
+metric_variables = strings(1, 2 * n_frames);
+for frame_idx = 0:n_frames - 1
+    metric_variables(2 * frame_idx + 1) = ...
+        string(sprintf('PSNR_Frame%03d', frame_idx));
+    metric_variables(2 * frame_idx + 2) = ...
+        string(sprintf('SSIM_Frame%03d', frame_idx));
+end
+required_variables = ["SequenceName", "SceneKey", "RstartID", ...
+    "CStartID", metric_variables];
+actual_variables = string(results_table.Properties.VariableNames);
+missing_variables = required_variables(~ismember(required_variables, ...
+    actual_variables));
+if ~isempty(missing_variables)
+    error('rangeSFTMetrics:CheckpointTableSchema', ...
+        'checkpoint结果表缺少必要列：%s。', join(missing_variables, ", "));
+end
+
+if ~isstring(results_table.SequenceName) || ...
+        ~isstring(results_table.SceneKey) || ...
+        ~isnumeric(results_table.RstartID) || ...
+        ~isnumeric(results_table.CStartID)
+    error('rangeSFTMetrics:CheckpointColumnType', ...
+        'checkpoint结果表的序列名称或元数据列类型不符合评估协议。');
+end
+for variable_name = metric_variables
+    if ~isnumeric(results_table.(variable_name))
+        error('rangeSFTMetrics:CheckpointColumnType', ...
+            'checkpoint指标列%s不是数值类型。', variable_name);
+    end
+end
+
+checkpoint_names = results_table.SequenceName(:);
+if numel(unique(checkpoint_names)) ~= numel(checkpoint_names)
+    error('rangeSFTMetrics:CheckpointDuplicateSequence', ...
+        'checkpoint包含重复的SequenceName，不能继续恢复。');
+end
+[is_known_sequence, source_indices] = ismember(checkpoint_names, all_names);
+if ~all(is_known_sequence)
+    unknown_names = join(checkpoint_names(~is_known_sequence), ", ");
+    error('rangeSFTMetrics:CheckpointUnknownSequence', ...
+        'checkpoint包含当前数据集不存在的序列：%s。', unknown_names);
+end
+
+metadata_matches = ...
+    isequal(results_table.SceneKey(:), scene_keys(source_indices)) && ...
+    isequaln(results_table.RstartID(:), rstart_ids(source_indices)) && ...
+    isequaln(results_table.CStartID(:), cstart_ids(source_indices));
+if ~metadata_matches
+    error('rangeSFTMetrics:CheckpointMetadataMismatch', ...
+        ['checkpoint中的SceneKey、RstartID或CStartID与SequenceName不对应，' ...
+        '请人工核查并移除错误checkpoint后重新评估。']);
+end
+
+metric_values = extract_frame_matrix(results_table, "PSNR_Frame", n_frames);
+ssim_values = extract_frame_matrix(results_table, "SSIM_Frame", n_frames);
+if any(~isfinite(metric_values), 'all') || ...
+        any(~isfinite(ssim_values), 'all')
+    error('rangeSFTMetrics:CheckpointNonFiniteMetric', ...
+        'checkpoint包含非有限PSNR或SSIM值，不能将对应序列视为已完成。');
+end
+end
+
+function rows = make_rows_table(chunk_names, chunk_scene_keys, ...
+        chunk_rstart_ids, chunk_cstart_ids, psnr_values, ssim_values, n_frames)
 %MAKE_ROWS_TABLE 由块计算结果构造与累计表同构的行块。
-chunk_names = all_names(chunk_indices);
-rows = table(chunk_names(:), scene_keys(chunk_indices), ...
-    rstart_ids(chunk_indices), cstart_ids(chunk_indices), ...
+rows = table(chunk_names(:), chunk_scene_keys(:), ...
+    chunk_rstart_ids(:), chunk_cstart_ids(:), ...
     'VariableNames', ["SequenceName", "SceneKey", "RstartID", "CStartID"]);
 for frame_idx = 0:n_frames - 1
     % 逐帧列显式按列赋值，保证与累计表列类型一致
