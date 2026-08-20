@@ -29,7 +29,7 @@ end
 REPO_ROOT = string(fileparts(SCRIPT_PATH));
 DATASET_PARENT = fullfile(REPO_ROOT, "dataset_range_2dsft");
 
-PARAMETER_KEY = "";       % 留空自动发现唯一参数键子目录；多个时必须显式指定
+PARAMETER_KEY = "range_2d_sft_qh4_ql2_sm1_fr1p3_fa0p5_phi0_lp0p99_hp99p9_roi600_eb64";       % 留空自动发现唯一参数键子目录；多个时必须显式指定
 PARALLEL_WORKERS = 8;     % 并行worker数，0表示强制串行
 CHUNK_SIZE = 64;          % 每块序列数，块结束后保存一次checkpoint
 FORCE_RERUN = false;      % true时忽略已有checkpoint从头计算
