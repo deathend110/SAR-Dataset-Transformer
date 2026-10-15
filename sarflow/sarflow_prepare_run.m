@@ -1,9 +1,6 @@
 function record = sarflow_prepare_run(cfg)
 %PREPARE_RUN 只检查文件头与网格；固定清单并严格核验运行签名。
 if cfg.legacy, error('sarflow:LegacyWorkflow','统一入口不接受legacy配置。'); end
-if isempty(regexp(char(cfg.run_id),'^[A-Za-z0-9][A-Za-z0-9_-]*$','once'))
-    error('sarflow:RunID','RunID只能使用ASCII字母、数字、下划线及连字符。');
-end
 pairs = cfg.search.hl_pairs;
 if size(pairs,2)~=2 || isempty(pairs) || any(~isfinite(pairs),'all') || ...
         any(pairs(:,1)<=pairs(:,2)) || any(pairs(:,2)<1) || size(unique(pairs,'rows'),1)~=size(pairs,1)
@@ -82,7 +79,7 @@ p=sarflow_paths(cfg); path=fullfile(p.root,"run_record.mat");
 if isfile(path)
     old=load(path,'record');
     if ~isfield(old,'record')||~isequaln(old.record.signature,signature)
-        error('sarflow:RunMismatch','配置或源文件已改变，请使用新的RunID。');
+        error('sarflow:RunMismatch','配置或源文件与已有工作流记录不一致；请显式处理旧断点后再运行，不能混用结果。');
     end
     record=old.record; % 原清单是唯一恢复依据，不重新抽样。
 else

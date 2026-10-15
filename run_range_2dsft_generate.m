@@ -54,6 +54,7 @@ metadata_signature = build_metadata_signature( ...
     ENERGY_BUFFER, NYQUIST_MARGIN, grid_h, grid_l, normalization);
 if ~cfg.legacy
     metadata_signature.workflow = cfg.provenance;
+    metadata_signature.normalization_snapshot = sarflow_normalization_snapshot(metadata_signature);
 end
 prepare_output_root(OUTPUT_ROOT, LQ_ROOT, GT_ROOT, metadata_signature);
 
@@ -414,10 +415,16 @@ if isfolder(output_root)
         loaded = load(metadata_path, 'dataset_metadata');
         if ~isfield(loaded, 'dataset_metadata') || ...
                 ~isfield(loaded.dataset_metadata, 'signature') || ...
-                ~isequaln(loaded.dataset_metadata.signature, signature)
+                ~sarflow_dataset_compatible(loaded.dataset_metadata.signature, signature)
             error('rangeSFTDataset:MetadataMismatch', ...
                 '已有输出目录的metadata与当前生产协议不一致：%s。', ...
                 output_root);
+        end
+        % 仅迁移来源路径或工作流记录时更新metadata；已有PNG保持不动。
+        if ~isequaln(loaded.dataset_metadata.signature, signature)
+            dataset_metadata = loaded.dataset_metadata;
+            dataset_metadata.signature = signature;
+            atomic_save_metadata(metadata_path, dataset_metadata);
         end
     elseif has_lq_content || has_gt_content
         error('rangeSFTDataset:MetadataMissing', ...

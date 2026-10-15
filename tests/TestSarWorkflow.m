@@ -172,6 +172,47 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             rows.MeanSSIM=[0;0;1];ranked=sarflow_rank_candidates(rows);
             t.verifyEqual(ranked.MeanSSIM,0.5);
         end
+
+        function fixedDatasetLayoutWithoutRunID(t)
+            cfg=range_2dsft_config();setup_range_2dsft_paths(cfg);
+            t.verifyFalse(isfield(cfg,'run_id'));
+            paths=sarflow_paths(cfg);legacy=sarflow_paths(range_2dsft_config("legacy"));
+            t.verifyEqual(paths.dataset,fullfile(cfg.repo_root,"dataset_range_2dsft"));
+            t.verifyEqual(paths.dataset,legacy.dataset);
+            t.verifyEqual(paths.root,cfg.output_root);
+            S=load(cfg.parameter_file_60);
+            protocol=sarflow_statistics("build_protocol",cfg,S,10,0.99,99.9,600,64);
+            parameters=struct("Method","Range_2D_SFT","QHigh",2.5,"QLow",1.5, ...
+                "STRdB",1,"FrOverBr",0.9,"FaOverBa",0.5,"Phi0",0);
+            key=sarflow_statistics("make_parameter_key",parameters,protocol);
+            t.verifyEqual(key,"range_2d_sft_qh2p5_ql1p5_s1_fr0p9_fa0p5_phi0_lp0p99_hp99p9_roi600_eb64");
+            t.verifyEqual(fullfile(paths.dataset,key,"GT"),fullfile(cfg.repo_root,"dataset_range_2dsft",key,"GT"));
+        end
+
+        function reuseChecksActualNormalizationNotOnlyParameterKey(t)
+            folder=string(tempname);mkdir(folder);
+            cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
+            stats=struct('Modality',"JointHL",'VMin',0.1,'VMax',2,'ImageCount',90, ...
+                'PixelCount',90*600^2,'LowPercentile',0.99,'HighPercentile',99.9,'Method',"midpoint_exact_tall");
+            entry=struct('parameter_key',"key",'parameters',struct('QHigh',2.5), ...
+                'input_stats',stats,'effective_sampling',struct('H',2.5,'L',1.5),'updated_at',"entry_time");
+            scene_stats=struct('scene_name',"Scene",'source_manifest',table(10,'VariableNames',{'FileBytes'}), ...
+                'protocol',struct('roi_size',600),'gt',stats,'entries',entry,'updated_at',"scene_time");
+            scene_stats.gt.Modality="GT";
+            oldfile=fullfile(folder,"old.mat");newfile=fullfile(folder,"new.mat");
+            save(oldfile,'scene_stats');save(newfile,'scene_stats');
+            source=struct('StatsFile',oldfile,'SceneUpdatedAt',"scene_time",'EntryUpdatedAt',"entry_time");
+            old=struct('parameter_key',"key",'stats_root',folder,'normalization_protocol',scene_stats.protocol, ...
+                'normalization_sources',source);
+            current=old;current.normalization_sources.StatsFile=newfile;
+            current.workflow=struct('locked_file',"new_lock");
+            current.normalization_snapshot=sarflow_normalization_snapshot(current);
+            t.verifyTrue(sarflow_dataset_compatible(old,current));
+            different=current;different.normalization_snapshot.input.VMax=3;
+            t.verifyFalse(sarflow_dataset_compatible(old,different));
+            scene_stats.updated_at="changed";save(oldfile,'scene_stats');
+            t.verifyFalse(sarflow_dataset_compatible(old,current));
+        end
     end
     methods (Static)
         function removeFixture(folder)

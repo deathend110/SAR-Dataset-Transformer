@@ -5,9 +5,8 @@ cfg = struct();
 cfg.repo_root = string(fileparts(mfilename('fullpath')));
 cfg.legacy = string(mode) == "legacy";
 cfg.version = "range_2dsft_workflow_v1";
-cfg.run_id = "production_v1"; % 更改协议或依据确认结果重搜时必须使用新ID。
 cfg.stage = "preflight";
-cfg.output_root = fullfile(cfg.repo_root, "workflow_runs");
+cfg.output_root = fullfile(cfg.repo_root, "results_range_2dsft_workflow");
 cfg.data_root = "G:\MATLAB-G\SAR Full PSF";
 cfg.parameter_file_60 = fullfile(cfg.repo_root, "FS60_params.mat");
 cfg.dataset_names = ["SAR_Dataset_Bangkok_1", "SAR_Dataset_city1_histeq", ...
