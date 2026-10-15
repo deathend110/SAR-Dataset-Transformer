@@ -12,9 +12,6 @@
 
 ## 开始使用
 
-```matlab
-cfg = range_2dsft_config();
-run_range_2dsft_workflow(cfg); % 默认仅预检
-```
+在MATLAB编辑器中打开 `start_range_2dsft.m`，修改顶部参数区，然后点击“运行”，无需命令行操作。脚本默认对 `QH=3、QL=2` 执行完整流程；只需预检时，将脚本中的 `cfg.stage` 改为 `"preflight"`。
 
-详细阶段用法与恢复说明见[工作流说明](docs/WORKFLOW_USAGE.md)。完整搜索和生产须显式选择对应阶段，不会由预检自动启动。
+启动脚本调用统一工作流，不包含另一套处理逻辑。详细阶段用法与恢复说明见[工作流说明](docs/WORKFLOW_USAGE.md)。
