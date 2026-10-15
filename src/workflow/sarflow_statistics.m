@@ -1,6 +1,8 @@
 function varargout = sarflow_statistics(action, varargin)
-%STATISTICS 共享正式生产的JointHL统计、协议与清单实现。
+%STATISTICS 共享混合倍率JointHL及固定Q单分支统计、协议与清单。
 switch string(action)
+    case "imaging_parameters"
+        f = @imaging_parameters;
     case "build_protocol"
         f = @build_protocol;
     case "validate_parameters"
@@ -59,14 +61,19 @@ protocol = struct( ...
     "mixed_pixels_in_pool", false, ...
     "sequence", cfg.sequence, ...
     "imaging", imaging_parameters(S60));
+if sarflow_is_fixed(cfg)
+    protocol=rmfield(protocol,'energy_buffer');
+    protocol.sampling_mode="fixed_q";
+    protocol.joint_pool="single_branch_all_9_frames";
+end
 end
 
 function validate_parameters(parameters, cfg, S60, protocol)
 %VALIDATE_PARAMETERS 检查参数表、归一化范围和SFT物理合法性。
-% parameters每行必须完整描述一组H/L倍率及共享2D-SFT参数。
+% parameters每行描述固定Q或H/L倍率，以及一套共享的2D-SFT参数。
 % 本函数不修改参数；任何超Nyquist或重复配置都直接报错。
-expected = ["QHigh", "QLow", "STRdB", ...
-    "FrOverBr", "FaOverBa", "Phi0"];
+fixed=sarflow_is_fixed(cfg);
+expected=sarflow_parameter_columns(fixed);
 if ~isequal(string(parameters.Properties.VariableNames), expected)
     error('scenePercentiles:ParameterSchema', ...
         'PARAMETERS变量名和顺序必须为：%s。', strjoin(expected, ', '));
@@ -81,11 +88,12 @@ if ~isnumeric(values) || any(~isfinite(values), 'all')
     error('scenePercentiles:ParameterValues', ...
         'PARAMETERS必须全部为有限数值。');
 end
-if any(parameters.QHigh <= parameters.QLow) || ...
-        any(parameters.QLow < 1) || ...
+if fixed,invalid_q=any(parameters.Q<1);
+else,invalid_q=any(parameters.QHigh<=parameters.QLow)||any(parameters.QLow<1);end
+if invalid_q || ...
         any(parameters.FrOverBr < 0) || any(parameters.FaOverBa < 0)
     error('scenePercentiles:ParameterRanges', ...
-        '必须满足QHigh>QLow>=1，且fr/Br、fa/Ba非负。');
+        '固定Q必须>=1，混合模式QHigh>QLow>=1，且频率非负。');
 end
 if protocol.low_percentile < 0 || protocol.high_percentile > 100 || ...
         protocol.low_percentile >= protocol.high_percentile
@@ -123,6 +131,12 @@ end
 function parameters = parameter_struct(row)
 %PARAMETER_STRUCT 将单行table转换为便于函数传递的标量结构。
 % 输出字段保留物理名称和double类型，避免table标量类型扩散。
+if ismember("Q",string(row.Properties.VariableNames))
+    parameters=struct("Method","Range_2D_SFT","Q",double(row.Q), ...
+        "STRdB",double(row.STRdB),"FrOverBr",double(row.FrOverBr), ...
+        "FaOverBa",double(row.FaOverBa),"Phi0",double(row.Phi0));
+    return;
+end
 parameters = struct( ...
     "Method", "Range_2D_SFT", ...
     "QHigh", double(row.QHigh), ...
@@ -137,7 +151,7 @@ function result = process_scene_parameter(cfg, S60, scene_manifest, ...
         pair, parameters, protocol, work_directory, need_gt, ...
         carrier_h, carrier_l, max_in_memory_percentile_gb, ...
         enable_in_memory_percentile, checkpoint_directory)
-%PROCESS_SCENE_PARAMETER 计算一个场景、一组参数的JointHL分位数。
+%PROCESS_SCENE_PARAMETER 计算场景级输入分位数，固定Q只汇集单分支像素。
 % scene_manifest包含该场景全部均匀抽样序列；pair定义H/L采集分支。
 % need_gt=true时在同一遍历中同步收集GT像素，避免额外读取和成像。
 % 输出result包含JointHL输入统计、可选GT统计和能量对齐审计量。
@@ -171,7 +185,9 @@ verify_completed_chunks( ...
 
 frame_count = cfg.sequence.n_frames;       % 固定九帧
 pixels_per_image = protocol.roi_size ^ 2; % 单张600×600 ROI的像素数
-mask = sarflow_build_hlh_mask(cfg.sequence);
+fixed=sarflow_is_fixed(cfg);
+branch_count=2;modality="JointHL";
+if fixed,branch_count=1;modality="FixedQ";end
 for sequence_idx = state.completed_sequences + 1:sequence_count
     signal = sarflow_load_echo_block( ...
         scene_manifest(sequence_idx, :), S60, cfg.sequence.block_width);
@@ -182,12 +198,12 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
             scene_manifest.SequenceID(sequence_idx));
     end
 
-    % 同一连续回波分别生成H/L完整RC；二者共享SFT物理参数。
-    [~, mix_info, RC_H, RC_L] = sarflow_mix_sequence_rc( ...
-        signal, S60, pair, mask.full, protocol.energy_buffer, carrier_h, carrier_l);
+    % 公共采集入口决定单分支或H/L双分支，始终处理完整连续块。
+    [~, mix_info, RC_H, RC_L] = sarflow_sequence_rc( ...
+        signal, S60, pair, cfg.sequence, cfg.energy_buffer, carrier_h, carrier_l);
 
-    % 每帧贡献一张H和一张L，因此JointHL像素数严格为GT的两倍。
-    joint_values = zeros(2 * pixels_per_image * frame_count, 1, 'single');
+    % 混合模式每帧贡献H/L两张ROI；固定模式只贡献单分支ROI。
+    joint_values = zeros(branch_count * pixels_per_image * frame_count, 1, 'single');
     if need_gt
         gt_values = zeros(pixels_per_image * frame_count, 1, 'single');
     end
@@ -196,12 +212,15 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
         columns = sarflow_frame_columns(cfg.sequence, frame_idx);
         h_image = focus_base_rc( ...
             RC_H(:, columns), S60, protocol.roi_size);
-        l_image = focus_base_rc( ...
-            RC_L(:, columns), S60, protocol.roi_size);
-        frame_pool = make_joint_hl_pool(h_image, l_image); % H/L等像素权重
-        % 将当前帧的2×600×600像素写入预分配列向量对应区间。
-        joint_start = (frame_idx - 1) * 2 * pixels_per_image + 1;
-        joint_stop = frame_idx * 2 * pixels_per_image;
+        if fixed
+            frame_pool=single(h_image(:)); % 单分支每帧只贡献一份ROI像素。
+        else
+            l_image=focus_base_rc(RC_L(:,columns),S60,protocol.roi_size);
+            frame_pool=make_joint_hl_pool(h_image,l_image);
+        end
+        % 按本模式的分支数写入当前帧的全部ROI像素。
+        joint_start = (frame_idx - 1) * branch_count * pixels_per_image + 1;
+        joint_stop = frame_idx * branch_count * pixels_per_image;
         joint_values(joint_start:joint_stop) = frame_pool;
 
         if need_gt
@@ -232,8 +251,8 @@ end
 % 所有序列完成后，跨全部chunk计算场景级精确分位数。
 percentages = [protocol.low_percentile, protocol.high_percentile];
 input_stats = calculate_chunk_percentiles( ...
-    joint_directory, percentages, "JointHL", ...
-    2 * sequence_count * frame_count, pixels_per_image, ...
+    joint_directory, percentages, modality, ...
+    branch_count * sequence_count * frame_count, pixels_per_image, ...
     max_in_memory_percentile_gb, sequence_count, enable_in_memory_percentile);
 
 if need_gt
@@ -255,10 +274,14 @@ audit = struct( ...
     "ScaleFactorMax", max(state.scale_factors), ...
     "MaxAbsBoundaryJumpDB", max(abs(state.boundary_jump_db)), ...
     "CompletedSequences", state.completed_sequences);
-if any(~isfinite([audit.ScaleFactorMin, audit.ScaleFactorMean, ...
+if ~fixed && any(~isfinite([audit.ScaleFactorMin, audit.ScaleFactorMean, ...
         audit.ScaleFactorMax, audit.MaxAbsBoundaryJumpDB]))
     error('scenePercentiles:NonfiniteAudit', ...
         '场景统计审计量中存在非有限值。');
+end
+if fixed
+    audit=rmfield(audit,{'ScaleFactorMin','ScaleFactorMean','ScaleFactorMax','MaxAbsBoundaryJumpDB'});
+    audit.SamplingMode="fixed_q";
 end
 result = struct("input_stats", input_stats, ...
     "gt_stats", gt_stats, "audit", audit);
@@ -554,17 +577,20 @@ end
 function key = make_parameter_key(parameters, protocol)
 %MAKE_PARAMETER_KEY 构造一套统计结果的稳定ASCII条目键。
 % 倍率、STR、fr、fa、phi0、分位点、ROI和buffer全部进入键，避免误用。
-key = "range_2d_sft" + ...
-    "_qh" + encode_number(parameters.QHigh) + ...
-    "_ql" + encode_number(parameters.QLow) + ...
+if isfield(parameters,'Q')
+    prefix="range_2d_sft_q"+encode_number(parameters.Q);
+else
+    prefix="range_2d_sft_qh"+encode_number(parameters.QHigh)+"_ql"+encode_number(parameters.QLow);
+end
+key = prefix + ...
     "_s" + encode_number(parameters.STRdB) + ...
     "_fr" + encode_number(parameters.FrOverBr) + ...
     "_fa" + encode_number(parameters.FaOverBa) + ...
     "_phi" + encode_number(parameters.Phi0) + ...
     "_lp" + encode_number(protocol.low_percentile) + ...
     "_hp" + encode_number(protocol.high_percentile) + ...
-    "_roi" + encode_number(protocol.roi_size) + ...
-    "_eb" + encode_number(protocol.energy_buffer);
+    "_roi" + encode_number(protocol.roi_size);
+if ~isfield(parameters,'Q'),key=key+"_eb"+encode_number(protocol.energy_buffer);end
 end
 
 function value = encode_number(number)

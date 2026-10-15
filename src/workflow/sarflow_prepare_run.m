@@ -1,9 +1,18 @@
 function record = sarflow_prepare_run(cfg)
 %PREPARE_RUN 只检查文件头与网格；固定清单并严格核验运行签名。
-pairs = cfg.search.hl_pairs;
-if size(pairs,2)~=2 || isempty(pairs) || any(~isfinite(pairs),'all') || ...
-        any(pairs(:,1)<=pairs(:,2)) || any(pairs(:,2)<1) || size(unique(pairs,'rows'),1)~=size(pairs,1)
-    error('sarflow:Pairs','倍率组必须唯一且满足QH>QL>=1。');
+fixed=sarflow_is_fixed(cfg);
+if fixed
+    q=cfg.search.fixed_q_values;
+    if ~isnumeric(q)||~isvector(q)||isempty(q)||any(~isfinite(q))||any(q<1)||numel(unique(q))~=numel(q)
+        error('sarflow:FixedQ','固定Q必须是唯一、有限且不小于1的数值向量。');
+    end
+    pairs=[q(:),zeros(numel(q),1)];
+else
+    pairs=cfg.search.hl_pairs;
+    if size(pairs,2)~=2||isempty(pairs)||any(~isfinite(pairs),'all')|| ...
+            any(pairs(:,1)<=pairs(:,2))||any(pairs(:,2)<1)||size(unique(pairs,'rows'),1)~=size(pairs,1)
+        error('sarflow:Pairs','倍率组必须唯一且满足QH>QL>=1。');
+    end
 end
 for name=["STR_grid","fr_grid","fa_grid","fine_STR_offsets","fine_frequency_offsets"]
     v=cfg.search.(name);
@@ -23,7 +32,7 @@ if numel(unique(cfg.dataset_names))~=numel(cfg.dataset_names)||isempty(cfg.datas
 end
 % 固定成像协议与正式生产入口一致。
 defaults=range_2dsft_config();
-if ~isequaln(cfg.sequence,defaults.sequence)||cfg.energy_buffer~=64|| ...
+if ~isequaln(cfg.sequence,defaults.sequence)||(~fixed&&cfg.energy_buffer~=64)|| ...
         cfg.generate.stride_frames~=3||cfg.nyquist_margin<=0||cfg.nyquist_margin>=1|| ...
         cfg.low_percentile<0||cfg.high_percentile>100||cfg.low_percentile>=cfg.high_percentile|| ...
         cfg.stats.blocks_per_file<1||mod(cfg.stats.blocks_per_file,1)~=0||cfg.stats.memory_gb<=0
@@ -66,6 +75,14 @@ if ~isstring(cfg.search.exclude_files)||~isvector(cfg.search.exclude_files)&&~is
 end
 config=rmfield(cfg,{'stage','provenance'});
 config.evaluate=rmfield(config.evaluate,{'workers','chunk_size'});
+% 保持已有混合模式签名原样；不相关的倍率配置不影响本模式恢复。
+if fixed
+    config.search=rmfield(config.search,'hl_pairs');
+    config=rmfield(config,'energy_buffer');
+else
+    config=rmfield(config,'sampling_mode');
+    config.search=rmfield(config.search,'fixed_q_values');
+end
 signature=struct("config",config,"inventory",inventory,"S60",S60,"protocol",protocol);
 coarse=table();
 for k=1:size(pairs,1)
@@ -84,8 +101,10 @@ if isfile(path)
     record=old.record; % 原清单是唯一恢复依据，不重新抽样。
 else
     manifest=make_manifest(cfg,inventory);
+    ranking="scene_equal: MeanSSIM,LRegionSSIM,WorstSSIM,MeanPSNR,ParameterKey";
+    if fixed,ranking="scene_equal: MeanSSIM,WorstSSIM,MeanPSNR,ParameterKey";end
     record=struct("signature",signature,"manifest",manifest, ...
-        "ranking","scene_equal: MeanSSIM,LRegionSSIM,WorstSSIM,MeanPSNR,ParameterKey", ...
+        "ranking",ranking, ...
         "confirmation_role","parameter_confirmation_only_not_model_test_split");
     sarflow_atomic_save(path,struct("record",record));
     writetable(manifest,fullfile(p.protocol,"manifest.csv"));

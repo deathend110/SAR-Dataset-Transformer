@@ -2,7 +2,9 @@ function locked = sarflow_search_impl(cfg)
 %RUN_RANGE_2DSFT_SEARCH 完成所有粗细候选后才锁定每个倍率组的参数。
 if nargin==0,cfg=range_2dsft_config();end
 setup_range_2dsft_paths(cfg);record=sarflow_prepare_run(cfg);p=sarflow_paths(cfg);
-S60=load(cfg.parameter_file_60);pairs=cfg.search.hl_pairs;
+S60=load(cfg.parameter_file_60);fixed=sarflow_is_fixed(cfg);
+if fixed,pairs=[cfg.search.fixed_q_values(:),zeros(numel(cfg.search.fixed_q_values),1)];
+else,pairs=cfg.search.hl_pairs;end
 all_coarse=table();fine=table();
 for k=1:size(pairs,1)
     grid=sarflow_candidate_grid(cfg,S60,pairs(k,1),pairs(k,2));
@@ -21,7 +23,8 @@ if ~isempty(fine)
 end
 locked=table();rankings=table();
 for k=1:size(pairs,1)
-    rows=metrics(metrics.QHigh==pairs(k,1)&metrics.QLow==pairs(k,2),:);
+    if fixed,rows=metrics(metrics.Q==pairs(k,1),:);
+    else,rows=metrics(metrics.QHigh==pairs(k,1)&metrics.QLow==pairs(k,2),:);end
     ranked=sarflow_rank_candidates(rows);
     if isempty(locked),locked=ranked(1,:);rankings=ranked;
     else,locked=[locked;ranked(1,:)];rankings=[rankings;ranked];end %#ok<AGROW>

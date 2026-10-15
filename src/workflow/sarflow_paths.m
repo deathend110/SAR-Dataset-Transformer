@@ -10,5 +10,10 @@ p.evaluation=fullfile(p.root,"evaluation");
 p.diagnostics=fullfile(p.root,"diagnostics");
 p.checkpoints=fullfile(p.root,"checkpoints");
 p.cache=fullfile(p.root,"cache");
+if sarflow_is_fixed(cfg)
+    for name=["protocol","search","confirmation","stats","diagnostics","checkpoints","cache"]
+        p.(name)=fullfile(p.(name),"fixed_q");
+    end
+end
 p.lock=fullfile(p.search,"locked_parameters.mat");
 end

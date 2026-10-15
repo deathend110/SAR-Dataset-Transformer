@@ -14,6 +14,10 @@ cfg = range_2dsft_config();
 % 也可选preflight、search、confirm、stats、generate或evaluate。
 cfg.stage = "all";
 
+% hlh：九帧H-L-H混合倍率；fixed_q：每条序列九帧全用同一个Q。
+cfg.sampling_mode = "hlh";
+cfg.search.fixed_q_values = [2,2.5,3]; % 仅fixed_q模式读取，逐Q独立搜索。
+
 % 每行是一组[QH, QL]；本次只处理新增的3/2，不重新搜索其他倍率组。
 % 多组示例：[4,2; 2.5,1.5; 3.25,1.75; 3,2]。
 cfg.search.hl_pairs = [3, 2];
@@ -48,7 +52,12 @@ cfg.evaluate.chunk_size = 256;
 
 %% ============================ 启动流程 =================================
 fprintf('执行阶段：%s\n', cfg.stage);
-disp(array2table(cfg.search.hl_pairs, 'VariableNames', {'QH', 'QL'}));
+fprintf('采样模式：%s\n',cfg.sampling_mode);
+if cfg.sampling_mode=="fixed_q"
+    disp(array2table(cfg.search.fixed_q_values(:),'VariableNames',{'Q'}));
+else
+    disp(array2table(cfg.search.hl_pairs,'VariableNames',{'QH','QL'}));
+end
 fprintf('最终数据集：%s\n', cfg.dataset_root);
 fprintf('辅助结果：%s\n', cfg.results_root);
 

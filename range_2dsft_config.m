@@ -4,6 +4,7 @@ cfg = struct();
 cfg.repo_root = string(fileparts(mfilename('fullpath')));
 cfg.version = "range_2dsft_workflow_v1";
 cfg.stage = "preflight";
+cfg.sampling_mode = "hlh"; % hlh或fixed_q；固定模式的九帧使用同一个Q。
 cfg.dataset_root = fullfile(cfg.repo_root, "dataset_range_2dsft");
 cfg.results_root = fullfile(cfg.repo_root, "results_range_2dsft");
 cfg.data_root = "G:\MATLAB-G\SAR Full PSF";
@@ -25,6 +26,7 @@ cfg.search = struct("hl_pairs", [4,2; 2.5,1.5; 3.25,1.75], ...
     "phi0", 0, "search_per_scene", 5, "confirm_per_scene", 2);
 % 根据确认结果调整方案后，可排除旧运行轨迹，重新建立独立确认样本。
 cfg.search.exclude_files = strings(0,1);
+cfg.search.fixed_q_values = [2,2.5,3];
 cfg.stats = struct("blocks_per_file", 10, "memory_gb", 8, "in_memory", true);
 cfg.generate = struct("stride_frames", 3, "gt_cache_frames", 32);
 cfg.evaluate = struct("workers", 0, "chunk_size", 256);

@@ -1,6 +1,6 @@
 function metrics = sarflow_evaluate_candidate(cfg, record, candidate, role)
 %EVALUATE_CANDIDATE 按场景与序列恢复；确认仅读取搜索拟合统计。
-candidate=candidate(:,["Stage","QHigh","QLow","STRdB","FrOverBr","FaOverBa","Phi0","ParameterKey"]);
+candidate=candidate(:,["Stage",sarflow_parameter_columns(sarflow_is_fixed(cfg)),"ParameterKey"]);
 p=sarflow_paths(cfg);S60=load(cfg.parameter_file_60);
 parameters=sarflow_statistics("parameter_struct",candidate);pair=make_range_sft_pair(parameters);
 [h,l]=resolve_pair_grids(pair,cfg.sequence,S60,cfg.nyquist_margin);
@@ -23,8 +23,8 @@ for scene=cfg.dataset_names
         error('sarflow:CheckpointOrder','评价断点序列顺序不正确。');
     end
     if state.completed<height(rows)&&isempty(carriers)
-        carriers=struct("H",build_2dsft_carrier(h,pair.H.threshold,S60), ...
-            "L",build_2dsft_carrier(l,pair.L.threshold,S60));
+        [ch,cl]=sarflow_build_carriers(pair,h,l,S60);
+        carriers=struct("H",ch,"L",cl);
     end
     for j=state.completed+1:height(rows)
         signal=sarflow_load_echo_block(rows(j,:),S60,cfg.sequence.block_width);

@@ -1,7 +1,6 @@
 function [lq, gt, gt_cache] = sarflow_render_sequence(signal, S60, pair, cfg, input_stats, gt_stats, carriers, gt_cache)
 %RENDER_SEQUENCE 搜索与确认使用正式成像流程；GT缓存只保留一条序列。
-mask = sarflow_build_hlh_mask(cfg.sequence);
-[RC_mix, ~] = sarflow_mix_sequence_rc(signal, S60, pair, mask.full, ...
+[RC_mix, ~] = sarflow_sequence_rc(signal, S60, pair, cfg.sequence, ...
     cfg.energy_buffer, carriers.H, carriers.L);
 s = cfg.sequence;
 lq = zeros(s.patch_size, s.patch_size, s.n_frames, 'uint8');

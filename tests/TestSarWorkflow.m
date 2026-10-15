@@ -67,6 +67,14 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             [mixed,actual,aligned,raw_l]=sarflow_mix_sequence_rc(signal,S,pair,mask,2,ch,cl);
             t.verifyEqual(mixed,old);t.verifyEqual(actual,info);
             t.verifyEqual(aligned,old_h*info.scale_factor);t.verifyEqual(raw_l,old_l);
+            % 新公共入口在混合模式必须逐元素保留原H/L成像和对齐。
+            s=cfg.sequence;s.signal_height=8;
+            signal=randn(8,s.block_width)+1i*randn(8,s.block_width);
+            [h,l]=resolve_pair_grids(pair,s,S,0.98);
+            [ch,cl]=sarflow_build_carriers(pair,h,l,S);mask=sarflow_build_hlh_mask(s);
+            [expected,info]=sarflow_mix_sequence_rc(signal,S,pair,mask.full,64,ch,cl);
+            [actual,actual_info]=sarflow_sequence_rc(signal,S,pair,s,64,ch,cl);
+            t.verifyEqual(actual,expected);t.verifyEqual(actual_info,info);
         end
 
         function checkpointRejectsMutation(t)

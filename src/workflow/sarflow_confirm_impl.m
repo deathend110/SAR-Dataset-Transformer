@@ -9,7 +9,8 @@ for k=1:height(locked)
 end
 summary=sarflow_rank_candidates(metrics);
 % 输出按倍率组对齐的差异，不用确认排名重新选参数。
-summary=sortrows(summary,["QHigh","QLow"]);
+if sarflow_is_fixed(cfg),summary=sortrows(summary,"Q");
+else,summary=sortrows(summary,["QHigh","QLow"]);end
 for k=1:height(summary)
     idx=find(locked.ParameterKey==summary.ParameterKey(k));
     summary.SearchMeanSSIM(k)=locked.MeanSSIM(idx);

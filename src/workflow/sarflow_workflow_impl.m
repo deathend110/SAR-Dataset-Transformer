@@ -25,7 +25,7 @@ for stage=stages
             output.confirmation=run_range_2dsft_confirm(cfg);
         case "stats"
             require_confirmation(p,record,locked);
-            parameters=locked(:,["QHigh","QLow","STRdB","FrOverBr","FaOverBa","Phi0"]);
+            parameters=locked(:,sarflow_parameter_columns(sarflow_is_fixed(cfg)));
             run_range_2dsft_stats(cfg,parameters);
             write_marker(p,"stats",record,locked);
         case "generate"
