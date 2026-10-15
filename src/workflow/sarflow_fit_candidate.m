@@ -1,7 +1,8 @@
 function fit = sarflow_fit_candidate(cfg, record, candidate, scene)
 %FIT_CANDIDATE 复用正式JointHL统计内核，完成后保存小型拟合结果。
-p=sarflow_paths(cfg);directory=fullfile(p.search,"candidates",candidate.ParameterKey,scene);
-path=fullfile(directory,"fit.mat");
+p=sarflow_paths(cfg);directory=fullfile(p.cache,"search","candidates",candidate.ParameterKey,scene);
+checkpoint_directory=fullfile(p.checkpoints,"search","fits",candidate.ParameterKey,scene);
+path=fullfile(checkpoint_directory,"fit.mat");
 signature=struct("run",record.signature,"candidate",candidate,"scene",scene);
 state=sarflow_load_state(path,signature,struct("signature",signature,"fit",struct()));
 if ~isempty(fieldnames(state.fit)),fit=state.fit;return;end
@@ -13,7 +14,7 @@ pair=make_range_sft_pair(parameters);
 ch=build_2dsft_carrier(h,pair.H.threshold,S60);cl=build_2dsft_carrier(l,pair.L.threshold,S60);
 protocol=record.signature.protocol;
 result=sarflow_statistics("process_scene_parameter",cfg,S60,rows,pair,parameters, ...
-    protocol,directory,false,ch,cl,cfg.stats.memory_gb,cfg.stats.in_memory);
+    protocol,directory,false,ch,cl,cfg.stats.memory_gb,cfg.stats.in_memory,fullfile(checkpoint_directory,"normalization"));
 state.fit=struct("input",result.input_stats,"gt",sarflow_fit_gt(cfg,record,scene), ...
     "audit",result.audit,"search_manifest",rows);
 sarflow_atomic_save(path,struct("state",state));fit=state.fit;

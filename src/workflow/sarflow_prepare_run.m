@@ -1,6 +1,5 @@
 function record = sarflow_prepare_run(cfg)
 %PREPARE_RUN 只检查文件头与网格；固定清单并严格核验运行签名。
-if cfg.legacy, error('sarflow:LegacyWorkflow','统一入口不接受legacy配置。'); end
 pairs = cfg.search.hl_pairs;
 if size(pairs,2)~=2 || isempty(pairs) || any(~isfinite(pairs),'all') || ...
         any(pairs(:,1)<=pairs(:,2)) || any(pairs(:,2)<1) || size(unique(pairs,'rows'),1)~=size(pairs,1)
@@ -33,6 +32,7 @@ end
 if exist('psnr','file')~=2||exist('ssim','file')~=2
     error('sarflow:Toolbox','需要Image Processing Toolbox的psnr和ssim。');
 end
+sarflow_validate_roots(cfg);
 S60=load(cfg.parameter_file_60);
 required=["nrn","nan","fc","B","Fs","prf","R0","C","v", ...
     "Tp","Ta","gama","lambda","fnrn","fnan","tnrn","tnan","R_total","A_num"];
@@ -75,7 +75,7 @@ end
 if numel(unique(coarse.ParameterKey))~=height(coarse)
     error('sarflow:CandidateKeyCollision','不同候选映射到重复的ASCII参数键。');
 end
-p=sarflow_paths(cfg); path=fullfile(p.root,"run_record.mat");
+p=sarflow_paths(cfg); path=fullfile(p.protocol,"run_record.mat");
 if isfile(path)
     old=load(path,'record');
     if ~isfield(old,'record')||~isequaln(old.record.signature,signature)
@@ -88,9 +88,9 @@ else
         "ranking","scene_equal: MeanSSIM,LRegionSSIM,WorstSSIM,MeanPSNR,ParameterKey", ...
         "confirmation_role","parameter_confirmation_only_not_model_test_split");
     sarflow_atomic_save(path,struct("record",record));
-    writetable(manifest,fullfile(p.root,"manifest.csv"));
+    writetable(manifest,fullfile(p.protocol,"manifest.csv"));
 end
-sarflow_atomic_save(fullfile(p.root,"preflight.mat"),struct("candidates",coarse,"record",record));
+sarflow_atomic_save(fullfile(p.protocol,"preflight.mat"),struct("candidates",coarse,"record",record));
 fprintf('预检完成：%d条搜索、%d条确认、%d个粗候选。未运行成像。\n', ...
     sum(record.manifest.Role=="search"),sum(record.manifest.Role=="confirm"),height(coarse));
 end

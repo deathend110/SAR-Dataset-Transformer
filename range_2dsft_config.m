@@ -1,14 +1,13 @@
-function cfg = range_2dsft_config(mode)
+function cfg = range_2dsft_config()
 %RANGE_2DSFT_CONFIG 集中配置；默认仅预检，不启动成像或长实验。
-if nargin == 0, mode = "workflow"; end
 cfg = struct();
 cfg.repo_root = string(fileparts(mfilename('fullpath')));
-cfg.legacy = string(mode) == "legacy";
 cfg.version = "range_2dsft_workflow_v1";
 cfg.stage = "preflight";
-cfg.output_root = fullfile(cfg.repo_root, "results_range_2dsft_workflow");
+cfg.dataset_root = fullfile(cfg.repo_root, "dataset_range_2dsft");
+cfg.results_root = fullfile(cfg.repo_root, "results_range_2dsft");
 cfg.data_root = "G:\MATLAB-G\SAR Full PSF";
-cfg.parameter_file_60 = fullfile(cfg.repo_root, "FS60_params.mat");
+cfg.parameter_file_60 = fullfile(cfg.repo_root, "inputs", "parameters", "FS60_params.mat");
 cfg.dataset_names = ["SAR_Dataset_Bangkok_1", "SAR_Dataset_city1_histeq", ...
     "SAR_Dataset_city2_histeq", "SAR_Dataset_SAR_figure", ...
     "SAR_Dataset_filed", "SAR_Dataset_port", "SAR_Dataset_suburb"];
@@ -26,8 +25,7 @@ cfg.search = struct("hl_pairs", [4,2; 2.5,1.5; 3.25,1.75], ...
     "phi0", 0, "search_per_scene", 5, "confirm_per_scene", 2);
 % 根据确认结果调整方案后，可排除旧运行轨迹，重新建立独立确认样本。
 cfg.search.exclude_files = strings(0,1);
-cfg.stats = struct("blocks_per_file", 10, "memory_gb", 8, "in_memory", true, "work_root", "");
-if cfg.legacy, cfg.stats.work_root = "C:\TEMP"; end
+cfg.stats = struct("blocks_per_file", 10, "memory_gb", 8, "in_memory", true);
 cfg.generate = struct("stride_frames", 3, "gt_cache_frames", 32);
 cfg.evaluate = struct("workers", 0, "chunk_size", 256);
 cfg.provenance = struct();

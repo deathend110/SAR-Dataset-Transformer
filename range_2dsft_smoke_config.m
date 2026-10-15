@@ -3,7 +3,8 @@ function cfg = range_2dsft_smoke_config(fixture_root, parameter_file)
 % fixture_root应为独立的小型数据目录，包含SmokeScene/rstart 1.mat等7条轨迹。
 % 回波仍需满足正式1200x2224协议；不会自动启动或生成这些数据。
 cfg=range_2dsft_config();
-cfg.output_root=fullfile(cfg.repo_root,"results_range_2dsft_smoke");
+cfg.results_root=fullfile(string(fixture_root),"results_range_2dsft");
+cfg.dataset_root=fullfile(string(fixture_root),"dataset_range_2dsft");
 cfg.data_root=string(fixture_root);
 cfg.parameter_file_60=string(parameter_file);
 cfg.dataset_names="SmokeScene";

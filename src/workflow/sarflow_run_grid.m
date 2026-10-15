@@ -1,6 +1,6 @@
 function metrics = sarflow_run_grid(cfg, record, candidates, label)
 %RUN_GRID 每个候选提交汇总；内部仍按场景和序列保存细粒度断点。
-p=sarflow_paths(cfg);path=fullfile(p.search,label+".mat");
+p=sarflow_paths(cfg);path=fullfile(p.checkpoints,"search",label+".mat");
 signature=struct("run",record.signature,"candidates",candidates);
 state=sarflow_load_state(path,signature,struct("signature",signature,"completed",0,"metrics",table()));
 if state.completed<0||state.completed>height(candidates)

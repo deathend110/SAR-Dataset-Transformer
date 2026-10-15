@@ -1,9 +1,9 @@
 function stats = sarflow_fit_gt(cfg, record, scene)
 %FIT_GT GT只用搜索样本拟合，按场景共享；每条序列原子记录进度。
-p=sarflow_paths(cfg); directory=fullfile(p.search,"gt",scene);
+p=sarflow_paths(cfg); directory=fullfile(p.cache,"search","gt",scene);
 rows=record.manifest(record.manifest.Scene==scene & record.manifest.Role=="search",:);
 signature=struct("run",record.signature,"rows",rows);
-path=fullfile(directory,"state.mat");
+path=fullfile(p.checkpoints,"search","gt",scene,"state.mat");
 state=sarflow_load_state(path,signature,struct("signature",signature,"completed",0,"stats",struct()));
 if ~isempty(fieldnames(state.stats)),stats=state.stats;return;end
 S60=load(cfg.parameter_file_60);s=cfg.sequence;

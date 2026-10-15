@@ -4,8 +4,8 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
         function addRepositoryPath(t)
             repo=string(fileparts(fileparts(mfilename('fullpath'))));
             t.applyFixture(matlab.unittest.fixtures.PathFixture(repo));
-            for name = ["sarflow", "sampling", "sft", "sarproc"]
-                t.applyFixture(matlab.unittest.fixtures.PathFixture(fullfile(repo,name)));
+            for name = ["workflow", "sampling", "sft", "sarproc", "utils", "compat"]
+                t.applyFixture(matlab.unittest.fixtures.PathFixture(fullfile(repo,"src",name)));
             end
         end
     end
@@ -83,7 +83,7 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             cfg=range_2dsft_config();setup_range_2dsft_paths(cfg);
             folder=string(tempname);mkdir(folder);
             cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
-            cfg.output_root=fullfile(folder,"outputs");cfg.data_root=fullfile(folder,"raw");
+            cfg.results_root=fullfile(folder,"results");cfg.dataset_root=fullfile(folder,"dataset");cfg.data_root=fullfile(folder,"raw");
             cfg.dataset_names="SmokeScene";mkdir(fullfile(cfg.data_root,cfg.dataset_names));
             % 稀疏MAT仅用于读取变量头和构造清单，避免加载真实大回波。
             raw=sparse(1,1,1i,3598,2234);
@@ -134,13 +134,13 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             cfg=range_2dsft_config();setup_range_2dsft_paths(cfg);
             folder=string(tempname);mkdir(folder);
             cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
-            cfg.output_root=folder;cfg.dataset_names="Scene";
+            cfg.results_root=fullfile(folder,"results");cfg.dataset_root=fullfile(folder,"dataset");cfg.dataset_names="Scene";
             S=load(cfg.parameter_file_60);cfg.search.STR_grid=0;cfg.search.fr_grid=0;cfg.search.fa_grid=0;
             candidate=sarflow_candidate_grid(cfg,S,1.25,1);candidate=candidate(1,:);
             manifest=table(repmat("Scene",7,1),(1:7).',[repmat("search",5,1);repmat("confirm",2,1)], ...
                 'VariableNames',["Scene","SequenceID","Role"]);
             record=struct("signature",struct("fixture",1),"manifest",manifest);
-            p=sarflow_paths(cfg);directory=fullfile(p.search,"candidates",candidate.ParameterKey,"Scene");
+            p=sarflow_paths(cfg);directory=fullfile(p.checkpoints,"search","fits",candidate.ParameterKey,"Scene");
             fit=struct("input",struct("VMin",0,"VMax",1),"gt",struct("VMin",0,"VMax",1), ...
                 "search_manifest",manifest(1:5,:));
             signature=struct("run",record.signature,"candidate",candidate,"scene","Scene");
@@ -152,7 +152,7 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
                 rows.SequenceID=ids;rows.Role=repmat(role,numel(ids),1);
                 signature=struct("run",record.signature,"candidate",candidate,"role",role,"fit",fit);
                 state=struct("signature",signature,"completed",numel(ids),"metrics",rows);
-                sarflow_atomic_save(fullfile(directory,role+"_metrics.mat"),struct("state",state));
+                sarflow_atomic_save(fullfile(p.checkpoints,role,candidate.ParameterKey,"Scene_metrics.mat"),struct("state",state));
                 t.verifyEqual(sarflow_evaluate_candidate(cfg,record,candidate,role),rows);
             end
             % 清单没有FilePath；若错误地重新拟合或成像，上面的调用必然报错。
@@ -176,10 +176,9 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
         function fixedDatasetLayoutWithoutRunID(t)
             cfg=range_2dsft_config();setup_range_2dsft_paths(cfg);
             t.verifyFalse(isfield(cfg,'run_id'));
-            paths=sarflow_paths(cfg);legacy=sarflow_paths(range_2dsft_config("legacy"));
+            paths=sarflow_paths(cfg);
             t.verifyEqual(paths.dataset,fullfile(cfg.repo_root,"dataset_range_2dsft"));
-            t.verifyEqual(paths.dataset,legacy.dataset);
-            t.verifyEqual(paths.root,cfg.output_root);
+            t.verifyEqual(paths.root,cfg.results_root);
             S=load(cfg.parameter_file_60);
             protocol=sarflow_statistics("build_protocol",cfg,S,10,0.99,99.9,600,64);
             parameters=struct("Method","Range_2D_SFT","QHigh",2.5,"QLow",1.5, ...
@@ -212,6 +211,42 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             t.verifyFalse(sarflow_dataset_compatible(old,different));
             scene_stats.updated_at="changed";save(oldfile,'scene_stats');
             t.verifyFalse(sarflow_dataset_compatible(old,current));
+        end
+
+        function commitStagesOutsideDatasetAndResumes(t)
+            folder=string(tempname);mkdir(folder);
+            cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
+            cfg=range_2dsft_config();cfg.results_root=fullfile(folder,"results");cfg.dataset_root=fullfile(folder,"dataset");
+            paths=sarflow_paths(cfg);image=repmat(uint8(37),4,4,9);
+            sarflow_commit_sequence(paths,"key","seq",image,image,struct('q',2));
+            t.verifyEqual(sarflow_sequence_output(paths,"key","seq"),"complete");
+            t.verifyFalse(isfolder(fullfile(paths.cache,"generation","key","seq")));
+            t.verifyEqual(numel(dir(fullfile(paths.dataset,"key","GT","seq","*.png"))),9);
+            % 模拟GT已提交、LQ仍在缓存的中断点。
+            stage=fullfile(paths.cache,"generation","key","partial");mkdir(fullfile(stage,"LQ"));
+            mkdir(fullfile(paths.dataset,"key","GT","partial"));
+            for k=0:8
+                imwrite(image(:,:,1),fullfile(stage,"LQ",sprintf('%03d.png',k)));
+                imwrite(image(:,:,1),fullfile(paths.dataset,"key","GT","partial",sprintf('%03d.png',k)));
+            end
+            state=struct('parameter_key',"key",'sequence_name',"partial",'phase',"staged");
+            sarflow_atomic_save(fullfile(paths.checkpoints,"generation","key","partial.mat"),struct('state',state));
+            t.verifyEqual(sarflow_sequence_output(paths,"key","partial"),"complete");
+        end
+
+        function migrationRollbackRestoresOnlyMappedFiles(t)
+            folder=string(tempname);mkdir(folder);
+            cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
+            cfg=range_2dsft_config();cfg.repo_root=folder;cfg.results_root=fullfile(folder,"results");
+            directory=fullfile(cfg.results_root,"migration");mkdir(fullfile(directory,"originals"));
+            source=fullfile(folder,"input.csv");target=fullfile(folder,"new","input.csv");mkdir(fileparts(target));
+            writelines("before",fullfile(directory,"originals","000_input.csv"));
+            writelines("after",source);writelines("after",target);
+            item=struct('source',source,'target',target);
+            writelines(jsonencode(item),fullfile(directory,"file_mapping.json"));
+            out=sarflow_migrate_layout(cfg,"rollback");
+            t.verifyEqual(out.status,"rolled_back");
+            t.verifyEqual(strtrim(string(fileread(source))),"before");t.verifyFalse(isfile(target));
         end
     end
     methods (Static)

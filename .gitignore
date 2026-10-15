@@ -21,8 +21,10 @@ results_hlh_normalization_ablation/
 *.zip
 
 
-# 独立工作流运行产物，不纳入代码提交
-workflow_runs/
+# 最终数据、辅助结果与本机输入
+/dataset_range_2dsft/
+/results_range_2dsft/
+/inputs/parameters/*.mat
 
-results_range_2dsft_workflow/
-results_range_2dsft_smoke/
+# 小型参考参数表属于输入说明，不是运行输出
+!/inputs/reference/*.csv

@@ -1,0 +1,64 @@
+{
+  "normalization_parameters": [
+    {
+      "QHigh": 4.0,
+      "QLow": 2.0,
+      "STRdB": -1.0,
+      "FrOverBr": 1.3,
+      "FaOverBa": 0.5,
+      "Phi0": 0.0
+    },
+    {
+      "QHigh": 2.5,
+      "QLow": 1.5,
+      "STRdB": 1.0,
+      "FrOverBr": 0.9,
+      "FaOverBa": 0.5,
+      "Phi0": 0.0
+    },
+    {
+      "QHigh": 3.25,
+      "QLow": 1.75,
+      "STRdB": 0.0,
+      "FrOverBr": 1.0,
+      "FaOverBa": 0.4,
+      "Phi0": 0.0
+    }
+  ],
+  "production_parameters": {
+    "QHigh": 3.25,
+    "QLow": 1.75,
+    "STRdB": 0.0,
+    "FrOverBr": 1.0,
+    "FaOverBa": 0.4,
+    "Phi0": 0.0,
+    "Method": "Range_2D_SFT"
+  },
+  "evaluation_parameter_key": "range_2d_sft_qh2p5_ql1p5_s1_fr0p9_fa0p5_phi0_lp0p99_hp99p9_roi600_eb64",
+  "execution": {
+    "blocks_per_file": 10,
+    "low_percentile": 0.99,
+    "high_percentile": 99.9,
+    "roi_size": 600,
+    "energy_buffer": 64,
+    "memory_gb": 8,
+    "in_memory": true,
+    "evaluation_workers": 8,
+    "chunk_size": 256,
+    "force_rerun": false,
+    "previous_work_root": "C:/TEMP",
+    "sequence_stride_frames": 3,
+    "max_gt_cache_frames": 32,
+    "range_fft_cache_enabled": false
+  },
+  "purpose": "Configuration snapshot only; does not bypass search or confirmation",
+  "dataset_names": [
+    "SAR_Dataset_Bangkok_1",
+    "SAR_Dataset_city1_histeq",
+    "SAR_Dataset_city2_histeq",
+    "SAR_Dataset_SAR_figure",
+    "SAR_Dataset_filed",
+    "SAR_Dataset_port",
+    "SAR_Dataset_suburb"
+  ]
+}

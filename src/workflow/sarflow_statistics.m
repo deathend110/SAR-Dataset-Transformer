@@ -136,7 +136,7 @@ end
 function result = process_scene_parameter(cfg, S60, scene_manifest, ...
         pair, parameters, protocol, work_directory, need_gt, ...
         carrier_h, carrier_l, max_in_memory_percentile_gb, ...
-        enable_in_memory_percentile)
+        enable_in_memory_percentile, checkpoint_directory)
 %PROCESS_SCENE_PARAMETER 计算一个场景、一组参数的JointHL分位数。
 % scene_manifest包含该场景全部均匀抽样序列；pair定义H/L采集分支。
 % need_gt=true时在同一遍历中同步收集GT像素，避免额外读取和成像。
@@ -144,7 +144,7 @@ function result = process_scene_parameter(cfg, S60, scene_manifest, ...
 % 大像素池按序列写入chunk，避免将整个场景一次性保存在内存中。
 joint_directory = fullfile(work_directory, "joint");
 gt_directory = fullfile(work_directory, "gt");
-checkpoint_path = fullfile(work_directory, "checkpoint.mat");
+checkpoint_path = fullfile(checkpoint_directory, "checkpoint.mat");
 ensure_directory(joint_directory);
 if need_gt
     ensure_directory(gt_directory);
