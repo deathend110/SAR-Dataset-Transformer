@@ -1,4 +1,4 @@
-function p = paths(cfg)
+function p = sarflow_paths(cfg)
 %PATHS 新运行隔离全部输出；旧脚本仍访问原目录。
 p.root = fullfile(cfg.output_root, cfg.run_id);
 p.search = fullfile(p.root, "search");

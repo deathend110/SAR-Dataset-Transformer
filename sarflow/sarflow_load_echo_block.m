@@ -1,4 +1,4 @@
-function signal60 = load_echo_block(manifest_row, S60, block_width)
+function signal60 = sarflow_load_echo_block(manifest_row, S60, block_width)
 %LOAD_ECHO_BLOCK 读取清单指定的180MHz轨迹连续块并转换为60MHz。
 % manifest_row提供文件、变量名和CStart；persistent缓存避免重复读同一轨迹。
 % 输出固定为S60.nrn×block_width复回波，供H/L两分支共同使用。

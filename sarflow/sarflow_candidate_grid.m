@@ -1,4 +1,4 @@
-function candidates = candidate_grid(cfg, S60, qh, ql, anchor)
+function candidates = sarflow_candidate_grid(cfg, S60, qh, ql, anchor)
 %CANDIDATE_GRID 使用真实整数采样尺寸生成严格合法的粗/细网格。
 if nargin < 5, anchor = []; end
 p = struct("Method", "Range_2D_SFT", "QHigh", qh, "QLow", ql, ...
@@ -23,11 +23,11 @@ if isempty(sv)||isempty(rv)||isempty(av), error('sarflow:EmptyGrid','没有合�
 candidates = table(repmat(stage,n,1),repmat(qh,n,1),repmat(ql,n,1), ...
     a(:),b(:),c(:),repmat(cfg.search.phi0,n,1), ...
     'VariableNames', ["Stage","QHigh","QLow","STRdB","FrOverBr","FaOverBa","Phi0"]);
-protocol = sarflow.statistics("build_protocol",cfg,S60, ...
+protocol = sarflow_statistics("build_protocol",cfg,S60, ...
     cfg.stats.blocks_per_file,cfg.low_percentile,cfg.high_percentile,cfg.sequence.roi_size,cfg.energy_buffer);
 candidates.ParameterKey = strings(n,1);
 for k=1:n
-    p = sarflow.statistics("parameter_struct",candidates(k,:));
-    candidates.ParameterKey(k) = sarflow.statistics("make_parameter_key",p,protocol);
+    p = sarflow_statistics("parameter_struct",candidates(k,:));
+    candidates.ParameterKey(k) = sarflow_statistics("make_parameter_key",p,protocol);
 end
 end

@@ -2,6 +2,10 @@
 
 本仓库现在可以独立完成预检、参数搜索、独立确认、正式场景统计、数据生成和全量PNG评估。运行时不依赖 `SAR_Trans_dataset_valid`。根目录原有 `locked_parameters.csv` 仅是历史参考，新流程不读取它。
 
+## 代码目录
+
+公共工作流函数放在普通 `sarflow/` 文件夹中，函数名使用 `sarflow_` 前缀避免重名；不使用MATLAB的 `+` 包目录或点号调用。根目录阶段入口自动调用 `setup_range_2dsft_paths(cfg)` 添加普通函数路径。手动调用辅助函数前，先执行该路径设置函数。
+
 ## 开始使用
 
 ```matlab

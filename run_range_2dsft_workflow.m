@@ -5,7 +5,7 @@ allowed=["preflight","search","confirm","stats","generate","evaluate","all"];
 if ~isscalar(string(cfg.stage))||~ismember(string(cfg.stage),allowed)
     error('sarflow:Stage','未知执行阶段。');
 end
-sarflow.setup(cfg);record=sarflow.prepare_run(cfg);p=sarflow.paths(cfg);
+setup_range_2dsft_paths(cfg);record=sarflow_prepare_run(cfg);p=sarflow_paths(cfg);
 output=struct("paths",p,"record",record);
 if cfg.stage=="preflight",return;end
 stages=string(cfg.stage);
@@ -15,7 +15,7 @@ for stage=stages
         output.locked=run_range_2dsft_search(cfg);
         continue;
     end
-    locked=sarflow.read_lock(cfg,record);
+    locked=sarflow_read_lock(cfg,record);
     cfg.provenance=struct("run_id",cfg.run_id,"run_record",fullfile(p.root,"run_record.mat"), ...
         "locked_file",p.lock,"locked_parameters",locked, ...
         "confirmation_file",fullfile(p.search,"confirmation.mat"), ...
@@ -31,7 +31,7 @@ for stage=stages
         case "generate"
             require_marker(p,"stats",record,locked);
             for k=1:height(locked)
-                parameters=sarflow.statistics("parameter_struct",locked(k,:));
+                parameters=sarflow_statistics("parameter_struct",locked(k,:));
                 run_range_2dsft_generate(cfg,parameters);
             end
             write_marker(p,"generate",record,locked);
@@ -55,7 +55,7 @@ end
 end
 
 function write_marker(p,stage,record,locked)
-sarflow.atomic_save(fullfile(p.root,stage+"_complete.mat"), ...
+sarflow_atomic_save(fullfile(p.root,stage+"_complete.mat"), ...
     struct("record",record,"locked",locked,"complete",true));
 end
 

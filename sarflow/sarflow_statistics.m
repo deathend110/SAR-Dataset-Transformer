@@ -1,4 +1,4 @@
-function varargout = statistics(action, varargin)
+function varargout = sarflow_statistics(action, varargin)
 %STATISTICS 共享正式生产的JointHL统计、协议与清单实现。
 switch string(action)
     case "build_protocol"
@@ -171,9 +171,9 @@ verify_completed_chunks( ...
 
 frame_count = cfg.sequence.n_frames;       % 固定九帧
 pixels_per_image = protocol.roi_size ^ 2; % 单张600×600 ROI的像素数
-mask = sarflow.build_hlh_mask(cfg.sequence);
+mask = sarflow_build_hlh_mask(cfg.sequence);
 for sequence_idx = state.completed_sequences + 1:sequence_count
-    signal = sarflow.load_echo_block( ...
+    signal = sarflow_load_echo_block( ...
         scene_manifest(sequence_idx, :), S60, cfg.sequence.block_width);
     if isreal(signal) || ~isequal(size(signal), ...
             [cfg.sequence.signal_height, cfg.sequence.block_width])
@@ -183,7 +183,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
     end
 
     % 同一连续回波分别生成H/L完整RC；二者共享SFT物理参数。
-    [~, mix_info, RC_H, RC_L] = sarflow.mix_sequence_rc( ...
+    [~, mix_info, RC_H, RC_L] = sarflow_mix_sequence_rc( ...
         signal, S60, pair, mask.full, protocol.energy_buffer, carrier_h, carrier_l);
 
     % 每帧贡献一张H和一张L，因此JointHL像素数严格为GT的两倍。
@@ -193,7 +193,7 @@ for sequence_idx = state.completed_sequences + 1:sequence_count
     end
     for frame_idx = 1:frame_count
         % 九个1200列成像窗口沿2224列连续块每次移动128列。
-        columns = sarflow.frame_columns(cfg.sequence, frame_idx);
+        columns = sarflow_frame_columns(cfg.sequence, frame_idx);
         h_image = focus_base_rc( ...
             RC_H(:, columns), S60, protocol.roi_size);
         l_image = focus_base_rc( ...

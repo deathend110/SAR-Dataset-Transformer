@@ -1,4 +1,4 @@
-function state = load_state(path, signature, initial)
+function state = sarflow_load_state(path, signature, initial)
 %LOAD_STATE 严格比较完整签名，拒绝配置不一致的断点。
 state=initial;
 if isfile(path)

@@ -1,4 +1,4 @@
-function record = prepare_run(cfg)
+function record = sarflow_prepare_run(cfg)
 %PREPARE_RUN 只检查文件头与网格；固定清单并严格核验运行签名。
 if cfg.legacy, error('sarflow:LegacyWorkflow','统一入口不接受legacy配置。'); end
 if isempty(regexp(char(cfg.run_id),'^[A-Za-z0-9][A-Za-z0-9_-]*$','once'))
@@ -42,10 +42,10 @@ required=["nrn","nan","fc","B","Fs","prf","R0","C","v", ...
 if ~all(isfield(S60,required))
     error('sarflow:ImagingFields','FS60参数文件缺少成像必需字段。');
 end
-protocol=sarflow.statistics("build_protocol",cfg,S60,cfg.stats.blocks_per_file, ...
+protocol=sarflow_statistics("build_protocol",cfg,S60,cfg.stats.blocks_per_file, ...
     cfg.low_percentile,cfg.high_percentile,cfg.sequence.roi_size,cfg.energy_buffer);
 % 枚举全部来源信息供恢复核验；这里只读取MAT变量头，不加载回波。
-inventory=sarflow.statistics("build_scene_manifest",cfg,1);
+inventory=sarflow_statistics("build_scene_manifest",cfg,1);
 if numel(unique(inventory.SceneKey))~=numel(cfg.dataset_names)
     error('sarflow:SceneKeyCollision','场景名称映射到重复的输出键。');
 end
@@ -72,13 +72,13 @@ config.evaluate=rmfield(config.evaluate,{'workers','chunk_size'});
 signature=struct("config",config,"inventory",inventory,"S60",S60,"protocol",protocol);
 coarse=table();
 for k=1:size(pairs,1)
-    rows=sarflow.candidate_grid(cfg,S60,pairs(k,1),pairs(k,2));
+    rows=sarflow_candidate_grid(cfg,S60,pairs(k,1),pairs(k,2));
     if isempty(coarse),coarse=rows;else,coarse=[coarse;rows];end %#ok<AGROW>
 end
 if numel(unique(coarse.ParameterKey))~=height(coarse)
     error('sarflow:CandidateKeyCollision','不同候选映射到重复的ASCII参数键。');
 end
-p=sarflow.paths(cfg); path=fullfile(p.root,"run_record.mat");
+p=sarflow_paths(cfg); path=fullfile(p.root,"run_record.mat");
 if isfile(path)
     old=load(path,'record');
     if ~isfield(old,'record')||~isequaln(old.record.signature,signature)
@@ -90,10 +90,10 @@ else
     record=struct("signature",signature,"manifest",manifest, ...
         "ranking","scene_equal: MeanSSIM,LRegionSSIM,WorstSSIM,MeanPSNR,ParameterKey", ...
         "confirmation_role","parameter_confirmation_only_not_model_test_split");
-    sarflow.atomic_save(path,struct("record",record));
+    sarflow_atomic_save(path,struct("record",record));
     writetable(manifest,fullfile(p.root,"manifest.csv"));
 end
-sarflow.atomic_save(fullfile(p.root,"preflight.mat"),struct("candidates",coarse,"record",record));
+sarflow_atomic_save(fullfile(p.root,"preflight.mat"),struct("candidates",coarse,"record",record));
 fprintf('预检完成：%d条搜索、%d条确认、%d个粗候选。未运行成像。\n', ...
     sum(record.manifest.Role=="search"),sum(record.manifest.Role=="confirm"),height(coarse));
 end

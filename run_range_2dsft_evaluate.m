@@ -1,7 +1,7 @@
 function results_table = run_range_2dsft_evaluate(cfg, PARAMETER_KEY)
 %RUN_RANGE_2DSFT_EVALUATE 可调用的全量PNG指标入口。
-sarflow.setup(cfg);
-paths = sarflow.paths(cfg);
+setup_range_2dsft_paths(cfg);
+paths = sarflow_paths(cfg);
 SCRIPT_PATH = fullfile(cfg.repo_root, "evaluate_range_2dsft_dataset_psnr_ssim");
 DATASET_PARENT = paths.dataset;
 RESULTS_ROOT = paths.evaluation;

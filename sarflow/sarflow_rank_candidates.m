@@ -1,4 +1,4 @@
-function ranked = rank_candidates(rows)
+function ranked = sarflow_rank_candidates(rows)
 %RANK_CANDIDATES 先场景内汇总，再场景等权；稳定参数键用于并列排序。
 keys = unique(rows.ParameterKey,'stable');
 ranked = table();

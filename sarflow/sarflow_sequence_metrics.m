@@ -1,12 +1,12 @@
-function out = sequence_metrics(lq, gt, cfg)
+function out = sarflow_sequence_metrics(lq, gt, cfg)
 %SEQUENCE_METRICS 主指标用uint8；结构指标使用[0,1]，避免动态范围混用。
-s=cfg.sequence; mask=sarflow.build_hlh_mask(s);
+s=cfg.sequence; mask=sarflow_build_hlh_mask(s);
 ps=zeros(s.n_frames,1);ss=ps;ls=nan(s.n_frames,1);gr=ps;br=ps;
 boundary=zeros(0,1); overlap=zeros(s.n_frames-1,1);
 a=double(lq)/255;b=double(gt)/255;
 for k=1:s.n_frames
     ps(k)=psnr(lq(:,:,k),gt(:,:,k));ss(k)=ssim(lq(:,:,k),gt(:,:,k));
-    columns=sarflow.frame_columns(s,k);
+    columns=sarflow_frame_columns(s,k);
     offset=floor((s.signal_width-s.patch_size)/2);
     hmask=mask.full(columns(offset+(1:s.patch_size)));
     if sum(~hmask)>=11,ls(k)=ssim(lq(:,~hmask,k),gt(:,~hmask,k));end

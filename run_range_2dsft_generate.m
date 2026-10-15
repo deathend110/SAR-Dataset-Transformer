@@ -1,7 +1,7 @@
 function output_root = run_range_2dsft_generate(cfg, PARAMETERS)
 %RUN_RANGE_2DSFT_GENERATE 可调用的数据生产入口，保留旧输出与恢复校验。
-sarflow.setup(cfg);
-paths = sarflow.paths(cfg);
+setup_range_2dsft_paths(cfg);
+paths = sarflow_paths(cfg);
 REPO_ROOT = cfg.repo_root;
 SCRIPT_PATH = fullfile(REPO_ROOT, "generate_range_2dsft_dataset");
 SCENE_NAMES = cfg.dataset_names;
@@ -58,7 +58,7 @@ end
 prepare_output_root(OUTPUT_ROOT, LQ_ROOT, GT_ROOT, metadata_signature);
 
 %% =========================== 正式数据集生成 ==============================
-mode_mask = sarflow.build_hlh_mask(SEQUENCE);
+mode_mask = sarflow_build_hlh_mask(SEQUENCE);
 generated_count = 0;
 skipped_count = 0;
 
@@ -67,12 +67,12 @@ fprintf('输出目录：%s\n', OUTPUT_ROOT);
 for scene_idx = 1:numel(SCENE_NAMES)
     scene = SCENE_NAMES(scene_idx);
     scene_directory = fullfile(DATA_ROOT, scene);
-    files = sarflow.statistics("sort_echo_files", dir(fullfile(scene_directory, "rstart*.mat")));
+    files = sarflow_statistics("sort_echo_files", dir(fullfile(scene_directory, "rstart*.mat")));
     if isempty(files)
         error('rangeSFTDataset:EchoFilesMissing', ...
             '场景%s中没有rstart*.mat。', scene);
     end
-    scene_key = sarflow.statistics("make_scene_key", scene);
+    scene_key = sarflow_statistics("make_scene_key", scene);
     stats = normalization(scene_idx);
 
     fprintf('\n[%d/%d] 场景%s，共%d条轨迹。\n', ...
@@ -240,7 +240,7 @@ function output = load_scene_normalization( ...
         stats_root, scene, parameters, sequence, buffer, ...
         S60, grid_h, grid_l)
 %LOAD_SCENE_NORMALIZATION 按场景和完整参数键读取JointHL及GT统计。
-scene_key = sarflow.statistics("make_scene_key", scene);
+scene_key = sarflow_statistics("make_scene_key", scene);
 file_path = fullfile(stats_root, scene_key + ".mat");
 if ~isfile(file_path)
     error('rangeSFTDataset:SceneStatsMissing', ...
@@ -263,7 +263,7 @@ if ~all(isfield(stats, required)) || ...
 end
 verify_stats_protocol(stats.protocol, sequence, buffer, S60, file_path);
 
-parameter_key = sarflow.statistics("make_parameter_key", parameters, stats.protocol);
+parameter_key = sarflow_statistics("make_parameter_key", parameters, stats.protocol);
 if isempty(stats.entries)
     error('rangeSFTDataset:StatsEntriesEmpty', ...
         '场景%s没有任何Range+2D-SFT参数统计。', scene);
@@ -512,7 +512,7 @@ function [lq_sequence, gt_sequence, gt_cache] = generate_sequence( ...
         carrier_h, carrier_l, c_start, gt_cache, ...
         precomputed_signal_up_h, precomputed_signal_up_l)
 %GENERATE_SEQUENCE 由一个连续回波块生成配对的九帧LQ和GT。
-[RC_mix, ~] = sarflow.mix_sequence_rc( ...
+[RC_mix, ~] = sarflow_mix_sequence_rc( ...
     signal, S60, pair, mask.full, buffer, carrier_h, carrier_l, ...
     precomputed_signal_up_h, precomputed_signal_up_l);
 
@@ -520,7 +520,7 @@ lq_sequence = zeros(sequence.patch_size, sequence.patch_size, ...
     sequence.n_frames, 'uint8');
 gt_sequence = zeros(size(lq_sequence), 'uint8');
 for frame_idx = 1:sequence.n_frames
-    columns = sarflow.frame_columns(sequence, frame_idx);
+    columns = sarflow_frame_columns(sequence, frame_idx);
     lq_roi = focus_base_rc(RC_mix(:, columns), S60, sequence.roi_size);
     global_frame_start = c_start + (frame_idx - 1) * sequence.step;
     [gt_frame, gt_cache] = get_gt_frame_cached( ...
@@ -528,7 +528,7 @@ for frame_idx = 1:sequence.n_frames
         global_frame_start, gt_cache);
 
     % 必须先在600×600 ROI上使用生产分位数归一化，再中心裁剪到512。
-    lq_sequence(:, :, frame_idx) = sarflow.normalize_frame( ...
+    lq_sequence(:, :, frame_idx) = sarflow_normalize_frame( ...
         lq_roi, input_stats, sequence.patch_size);
     gt_sequence(:, :, frame_idx) = gt_frame;
 end
@@ -566,7 +566,7 @@ if ~isempty(slot)
 end
 
 gt_roi = generate_gt_image(signal_frame, S60, sequence.roi_size);
-gt_frame = sarflow.normalize_frame(gt_roi, gt_stats, sequence.patch_size);
+gt_frame = sarflow_normalize_frame(gt_roi, gt_stats, sequence.patch_size);
 
 if cache.count < cache.max_frames
     cache.count = cache.count + 1;

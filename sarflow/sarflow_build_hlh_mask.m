@@ -1,4 +1,4 @@
-function mask = build_hlh_mask(sequence)
+function mask = sarflow_build_hlh_mask(sequence)
 %BUILD_HLH_MASK 构造2224列连续RC上的H-L-H空间选择掩膜。
 % 有效逻辑区为H(512)-L(512)-H(512)，两端各扩展344列。
 % true选择对齐后的RC_H，false选择RC_L；边界应固定为两个。
