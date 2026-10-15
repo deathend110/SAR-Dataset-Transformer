@@ -19,6 +19,33 @@
 
 该脚本的参数区覆盖集中配置中的对应默认值，默认仅处理新增的 `QH=3、QL=2`，阶段为 `all`，会执行完整搜索及生产。只想检查配置时，将 `cfg.stage` 改为 `"preflight"`。中断后保持参数不变，再次点击“运行”即可按断点恢复。脚本执行完后，`cfg`和`workflow_result`保留在工作区，便于查看。
 
+### 选择混合倍率或固定 Q 对照
+
+在同一个启动脚本顶部修改模式，不需要命令行：
+
+```matlab
+% H-L-H混合倍率，默认保持原有3/2实验。
+cfg.sampling_mode = "hlh";
+cfg.search.hl_pairs = [3,2];
+```
+
+```matlab
+% 固定Q对照：依次搜索、确认、统计、生成及评估三个Q。
+cfg.sampling_mode = "fixed_q";
+cfg.search.fixed_q_values = [2,2.5,3];
+cfg.stage = "all";
+```
+
+每次启动只运行所选模式。固定模式不读取`hl_pairs`，混合模式不读取`fixed_q_values`。工厂配置仍默认`preflight`；编辑器启动脚本默认`all`，点击运行会开始实际实验。
+
+固定模式仍然只沿距离维上采样，使用二维SFT阈值。每条连续块只生成一条指定Q的RC分支，九帧均来自该分支，完全跳过H/L能量对齐和空间混合。小数倍率按`round(Q*N)`构建实际采样网格。
+
+每个Q独立搜索一套跨场景和序列共享的STR、fr/Br、fa/Ba，初相位固定0；“全局最优”仅指搜索网格及当前样本上的最优，不保证网格外的数学最优。阈值幅度仍按当前回波块估计尺度。
+
+固定模式采用与混合模式相同的轨迹和序列选择规则；来源及抽样配置相同时，两种模式样本相同。每个候选用搜索样本的单分支九帧ROI拟合场景分位数，每帧只计一次，不使用JointHL。GT在场景内跨候选、跨Q共享。确认只读取搜索拟合统计；正式统计仍按每轨迹10条序列重新计算。
+
+固定模式场景等权，按平均SSIM、最差帧SSIM、平均PSNR、稳定参数键排序。L区SSIM和H/L边界指标为`NaN`（不适用），不参与排序；亮点、梯度、重叠诊断和联系图继续输出。统一入口自动读取该模式的锁定MAT，将最优参数交给统计和生产，无需手动复制阈值。
+
 ## 执行阶段
 
 ```matlab
@@ -32,7 +59,7 @@ run_range_2dsft_workflow(cfg);
 | `preflight` | 文件头、协议、样本清单、候选网格预检 | 原始回波和成像参数可用 |
 | `search`    | 粗搜索、局部细化和参数锁定      | 自动预检        |
 | `confirm`   | 独立样本确认，不重新选优       | 搜索完整完成      |
-| `stats`     | 正式场景JointHL和GT统计   | 确认完成        |
+| `stats`     | 正式场景输入和GT统计   | 确认完成        |
 | `generate`  | 所有锁定参数组的LQ/GT生成    | 正式统计完成      |
 | `evaluate`  | 最终PNG指标和曲线         | 生成完成        |
 | `all`       | 顺序执行全部阶段           | 自动预检        |
@@ -76,6 +103,10 @@ results_range_2dsft/
     cache/           GT缓存、像素chunk、未提交PNG
 ```
 
+混合模式保持上面的辅助目录。固定模式的`protocol`、`search`、`confirmation`、`normalization`、`diagnostics`、`checkpoints`、`cache`各自增加`fixed_q/`子目录；评估仍保存到`evaluation/<参数键>/`。
+
+固定数据集仍直接位于`dataset_range_2dsft/<参数键>/`，例如`range_2d_sft_q2_s0_fr0p2_fa0p2_phi0_lp0p99_hp99p9_roi600`。小数Q编码为`q2p5`；不包含无效的H/L边界缓冲字段。metadata记录固定模式、实际Q、单分支统计及各阶段来源。已有混合数据集和其参数键保持不变。
+
 不使用RunID，不为重复执行创建版本副本。同一配置完整结果复用，中断续算；签名使用`isequaln`比较，配置不一致则报错。正式统计成功提交后只清理相应可再生像素chunk。
 
 临时PNG在生成缓存写完整，保存提交断点后再移入最终目录；若在GT/LQ提交之间中断，可依断点继续提交。没有合法断点的残缺序列报错，不自动删除。
@@ -85,8 +116,8 @@ results_range_2dsft/
 ## 检查与小型验证
 
 ```matlab
-results = runtests("tests/TestSarWorkflow.m");
+results = runtests("tests");
 assertSuccess(results);
 ```
 
-轻量测试不执行完整搜索或真实数据生产。`range_2dsft_smoke_config(fixture_root, parameter_file)`提供单场景、两个粗候选的小型闭环配置，数据和辅助结果分别写入fixture目录下两个独立子目录；默认仍只预检。完整实验由用户明确启动。
+轻量测试不执行完整搜索或真实场景生产。`TestSarFixedQ`包含临时合成单场景、两条轨迹、单候选的真实成像闭环，并覆盖确认统计隔离、候选汇总中断恢复及完整PNG复用；测试结束清理自身临时目录。`range_2dsft_smoke_config(fixture_root, parameter_file)`提供单场景、两个粗候选的小型闭环配置，数据和辅助结果分别写入fixture目录下两个独立子目录；默认仍只预检。完整实验由用户明确启动。
