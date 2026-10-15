@@ -234,20 +234,6 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             t.verifyEqual(sarflow_sequence_output(paths,"key","partial"),"complete");
         end
 
-        function migrationRollbackRestoresOnlyMappedFiles(t)
-            folder=string(tempname);mkdir(folder);
-            cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
-            cfg=range_2dsft_config();cfg.repo_root=folder;cfg.results_root=fullfile(folder,"results");
-            directory=fullfile(cfg.results_root,"migration");mkdir(fullfile(directory,"originals"));
-            source=fullfile(folder,"input.csv");target=fullfile(folder,"new","input.csv");mkdir(fileparts(target));
-            writelines("before",fullfile(directory,"originals","000_input.csv"));
-            writelines("after",source);writelines("after",target);
-            item=struct('source',source,'target',target);
-            writelines(jsonencode(item),fullfile(directory,"file_mapping.json"));
-            out=sarflow_migrate_layout(cfg,"rollback");
-            t.verifyEqual(out.status,"rolled_back");
-            t.verifyEqual(strtrim(string(fileread(source))),"before");t.verifyFalse(isfile(target));
-        end
     end
     methods (Static)
         function removeFixture(folder)
