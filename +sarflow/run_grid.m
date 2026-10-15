@@ -1,0 +1,16 @@
+function metrics = run_grid(cfg, record, candidates, label)
+%RUN_GRID 每个候选提交汇总；内部仍按场景和序列保存细粒度断点。
+p=sarflow.paths(cfg);path=fullfile(p.search,label+".mat");
+signature=struct("run",record.signature,"candidates",candidates);
+state=sarflow.load_state(path,signature,struct("signature",signature,"completed",0,"metrics",table()));
+if state.completed<0||state.completed>height(candidates)
+    error('sarflow:GridCheckpoint','候选进度无效。');
+end
+for k=state.completed+1:height(candidates)
+    fprintf('%s 候选 %d/%d：%s\n',label,k,height(candidates),candidates.ParameterKey(k));
+    rows=sarflow.evaluate_candidate(cfg,record,candidates(k,:),"search");
+    if isempty(state.metrics),state.metrics=rows;else,state.metrics=[state.metrics;rows];end
+    state.completed=k;sarflow.atomic_save(path,struct("state",state));
+end
+metrics=state.metrics;
+end

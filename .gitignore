@@ -20,3 +20,6 @@ results_hlh_normalization_ablation/
 *.txt
 *.zip
 
+
+# 独立工作流运行产物，不纳入代码提交
+workflow_runs/
