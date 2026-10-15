@@ -1,6 +1,6 @@
 function output_root = sarflow_generate_impl(cfg, PARAMETERS)
 %RUN_RANGE_2DSFT_GENERATE 可调用的数据生产入口，保留旧输出与恢复校验。
-setup_range_2dsft_paths(cfg);
+directory_guard=setup_range_2dsft_paths(cfg); %#ok<NASGU>
 sarflow_validate_roots(cfg);
 paths = sarflow_paths(cfg);
 REPO_ROOT = cfg.repo_root;
@@ -147,7 +147,7 @@ end
 
 function validate_public_dependencies(repo_root)
 % 检查实际普通源码目录和当前MATLAB路径，避免误用其他工程同名函数。
-groups=struct("sarproc",["Range_Compress","RCMC","SAR_Imaging","estimate_rc_alignment","align_and_mix_rc","focus_base_rc","generate_gt_image"], ...
+groups=struct("sarproc",["Range_Compress","RCMC","SAR_Imaging","estimate_rc_alignment","align_and_mix_rc","focus_base_rc","generate_gt_image","sar_image_roi_indices"], ...
     "utils",["minmaxnormalize_image","crop_center"], ...
     "sampling",["upsample_range_fft","crop_range_spectrum","resolve_range_grid"], ...
     "sft",["quantize_1bit","build_2dsft_carrier","build_2dsft_threshold","resolve_azimuth_bandwidth","resolve_pair_grids","make_range_sft_pair","generate_range_2dsft_rc"]);

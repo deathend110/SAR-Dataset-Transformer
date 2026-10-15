@@ -10,6 +10,53 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
         end
     end
     methods (Test)
+        function entryIsolatesForeignCurrentDirectoryAndRestoresIt(t)
+            cfg=range_2dsft_config();
+            folder=string(tempname);mkdir(folder);
+            cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
+            % 模拟旧工程当前目录中的同名函数，保证此例不依赖旧仓库存在。
+            file=fullfile(folder,"Range_Compress.m");
+            fid=fopen(file,'w','n','UTF-8');
+            fprintf(fid,'function varargout=Range_Compress(varargin)\nerror(''foreign:RangeCompress'',''错误的外部函数'');\nend\n');
+            fclose(fid);
+            previous=pwd;directory_cleanup=onCleanup(@()cd(previous));
+            cd(folder);
+            t.verifyEqual(string(which('Range_Compress')),file);
+            guard=setup_range_2dsft_paths(cfg); %#ok<NASGU>
+            t.verifyEqual(string(pwd),cfg.repo_root);
+            t.verifyEqual(string(which('Range_Compress')),fullfile(cfg.repo_root,"src","sarproc","Range_Compress.m"));
+            clear guard
+            t.verifyEqual(string(pwd),folder);
+            % 验证公共入口报错时也会恢复外部目录，不滞留在工程目录。
+            cfg.stage="invalid_stage";
+            t.verifyError(@()run_range_2dsft_workflow(cfg),'sarflow:Stage');
+            t.verifyEqual(string(pwd),folder);
+            clear directory_cleanup
+        end
+
+        function metricMaskUsesProductionCropCoordinates(t)
+            cfg=range_2dsft_config();setup_range_2dsft_paths(cfg);S=load(cfg.parameter_file_60);
+            [rows,columns]=sar_image_roi_indices(S,600);
+            t.verifyEqual(rows,301:900);t.verifyEqual(columns,300:899);
+            patch_columns=columns(45:556);t.verifyEqual(patch_columns,344:855);
+            mask=sarflow_build_hlh_mask(cfg.sequence);counts=zeros(1,9);
+            gt=repmat(uint8(mod(reshape(0:512^2-1,512,512),251)),1,1,9);
+            lq=uint8(max(double(gt)-9,0));expected=nan(1,9);
+            for k=1:9
+                actual=mask.full((k-1)*128+(344:855));counts(k)=sum(~actual);
+                if sum(~actual)>=11,expected(k)=ssim(lq(:,~actual,k),gt(:,~actual,k));end
+            end
+            t.verifyEqual(counts,[0,127,255,383,511,385,257,129,1]);
+            out=sarflow_sequence_metrics(lq,gt,cfg,S);
+            t.verifyEqual(out.LRegionSSIM,mean(expected,'omitnan'));
+            % 将原裁剪算法独立用于实际RC，确认共享坐标没有平移生产图像。
+            rng(19);rc=randn(S.nrn,S.nan)+1i*randn(S.nrn,S.nan);
+            focused=SAR_Imaging(RCMC(rc,S.lambda,S.fnrn,S.fnan,S.R0,S.C,S.v), ...
+                S.lambda,S.Fs,S.R0,S.C,S.v,S.tnan,S.Ta,S.prf);
+            old=crop_center(abs(focused(301:900,300:899)),600);
+            t.verifyEqual(focus_base_rc(rc,S,600),old);
+        end
+
         function defaultGridAndFractionalSampling(t)
             cfg=range_2dsft_config();setup_range_2dsft_paths(cfg);S=load(cfg.parameter_file_60);
             counts=zeros(3,1);
@@ -112,7 +159,8 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
                 if isempty(locked),locked=rows(1,:);else,locked=[locked;rows(1,:)];end %#ok<AGROW>
             end
             record=first.record;
-            sarflow_atomic_save(p.lock,struct("locked",locked,"record",record,"complete",true));
+            sarflow_atomic_save(p.lock,struct("locked",locked,"record",record,"complete",true, ...
+                "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr"));
             for stage=["stats","generate","evaluate"]
                 cfg.stage=stage;
                 t.verifyError(@()run_range_2dsft_workflow(cfg),'sarflow:Prerequisite');
@@ -158,7 +206,8 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
                 ids=manifest.SequenceID(manifest.Role==role);
                 rows=repmat(candidate,numel(ids),1);rows.Scene=repmat("Scene",numel(ids),1);
                 rows.SequenceID=ids;rows.Role=repmat(role,numel(ids),1);
-                signature=struct("run",record.signature,"candidate",candidate,"role",role,"fit",fit);
+                signature=struct("run",record.signature,"candidate",candidate,"role",role,"fit",fit, ...
+                    "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr");
                 state=struct("signature",signature,"completed",numel(ids),"metrics",rows);
                 sarflow_atomic_save(fullfile(p.checkpoints,role,candidate.ParameterKey,"Scene_metrics.mat"),struct("state",state));
                 t.verifyEqual(sarflow_evaluate_candidate(cfg,record,candidate,role),rows);

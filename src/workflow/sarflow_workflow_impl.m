@@ -5,7 +5,8 @@ allowed=["preflight","search","confirm","stats","generate","evaluate","all"];
 if ~isscalar(string(cfg.stage))||~ismember(string(cfg.stage),allowed)
     error('sarflow:Stage','未知执行阶段。');
 end
-setup_range_2dsft_paths(cfg);record=sarflow_prepare_run(cfg);p=sarflow_paths(cfg);
+directory_guard=setup_range_2dsft_paths(cfg); %#ok<NASGU>
+record=sarflow_prepare_run(cfg);p=sarflow_paths(cfg);
 output=struct("paths",p,"record",record);
 if cfg.stage=="preflight",return;end
 stages=string(cfg.stage);

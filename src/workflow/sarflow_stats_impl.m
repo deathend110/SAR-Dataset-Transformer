@@ -1,6 +1,6 @@
 function output_root = sarflow_stats_impl(cfg, PARAMETERS)
 %RUN_RANGE_2DSFT_STATS 可调用的正式场景统计入口，不清空调用者工作区。
-setup_range_2dsft_paths(cfg);
+directory_guard=setup_range_2dsft_paths(cfg); %#ok<NASGU>
 paths = sarflow_paths(cfg);
 OUTPUT_ROOT = paths.stats;
 WORK_ROOT = fullfile(paths.cache, "normalization");

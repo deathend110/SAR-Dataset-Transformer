@@ -1,6 +1,6 @@
 function results_table = sarflow_evaluate_impl(cfg, PARAMETER_KEY)
 %RUN_RANGE_2DSFT_EVALUATE 可调用的全量PNG指标入口。
-setup_range_2dsft_paths(cfg);
+directory_guard=setup_range_2dsft_paths(cfg); %#ok<NASGU>
 paths = sarflow_paths(cfg);
 SCRIPT_PATH = fullfile(cfg.repo_root, "run_range_2dsft_evaluate");
 DATASET_PARENT = paths.dataset;
@@ -116,11 +116,11 @@ end
 
 psnr_matrix = extract_frame_matrix(results_table, "PSNR_Frame", N_FRAMES);
 ssim_matrix = extract_frame_matrix(results_table, "SSIM_Frame", N_FRAMES);
-bad_mask = ~all(isfinite(psnr_matrix), 2) | ~all(isfinite(ssim_matrix), 2);
+bad_mask=any(isnan(psnr_matrix)|psnr_matrix==-Inf,2)|~all(isfinite(ssim_matrix),2);
 if any(bad_mask)
     bad_names = join(results_table.SequenceName(bad_mask), ", ");
     error('rangeSFTMetrics:NonFiniteMetric', ...
-        '以下序列存在非有限指标值，禁止写出：%s。', bad_names);
+        '以下序列存在NaN、负无穷PSNR或非有限SSIM，禁止写出：%s。', bad_names);
 end
 
 % 序列单位统计量：九帧算术平均
@@ -130,7 +130,10 @@ results_table.SSIM_Mean = mean(ssim_matrix, 2);
 % 曲线统计量：各帧位置全体序列平均（PSNR为dB域平均，1×9行向量）
 frame_axis = 0:N_FRAMES - 1;
 psnr_curve_mean = mean(psnr_matrix, 1);
-psnr_curve_std = std(psnr_matrix, 0, 1);
+% 含完全一致帧的位置均值为+Inf，标准差无定义，不伪造有限值。
+psnr_curve_std=nan(1,N_FRAMES);
+finite_positions=all(isfinite(psnr_matrix),1);
+psnr_curve_std(finite_positions)=std(psnr_matrix(:,finite_positions),0,1);
 ssim_curve_mean = mean(ssim_matrix, 1);
 ssim_curve_std = std(ssim_matrix, 0, 1);
 
@@ -153,6 +156,7 @@ evaluation_metadata = struct( ...
     "metric_psnr", "MATLAB psnr()，uint8动态范围[0,255]", ...
     "metric_ssim", "MATLAB ssim()，uint8动态范围[0,255]", ...
     "averaging", "序列均值=9帧算术平均；曲线=各帧位置全体序列平均（PSNR为dB域平均）", ...
+    "psnr_infinity_policy", "完全一致帧保留+Inf；含+Inf的帧均值为+Inf，标准差不定义", ...
     "matlab_version", string(version), ...
     "parallel_workers", workers_used, ...
     "dataset_signature", dataset_signature);
@@ -379,10 +383,10 @@ end
 
 metric_values = extract_frame_matrix(results_table, "PSNR_Frame", n_frames);
 ssim_values = extract_frame_matrix(results_table, "SSIM_Frame", n_frames);
-if any(~isfinite(metric_values), 'all') || ...
+if any(isnan(metric_values)|metric_values==-Inf, 'all') || ...
         any(~isfinite(ssim_values), 'all')
     error('rangeSFTMetrics:CheckpointNonFiniteMetric', ...
-        'checkpoint包含非有限PSNR或SSIM值，不能将对应序列视为已完成。');
+        'checkpoint包含NaN、负无穷PSNR或非有限SSIM值，不能将对应序列视为已完成。');
 end
 end
 
@@ -474,11 +478,15 @@ end
 function plot_metric_curve(frame_axis, mean_curve, std_curve, ...
         y_label, title_text, output_path)
 %PLOT_METRIC_CURVE 绘制均值曲线及±1std阴影带并保存300dpi PNG。
-figure_handle = figure('Color', 'w', 'Position', [100 100 900 600]);
+figure_handle = figure('Color', 'w', 'Position', [100 100 900 600], 'Visible','off');
+figure_cleanup=onCleanup(@()close(figure_handle));
 hold on;
 x = frame_axis(:).';                       % 显式1×N横坐标
 mean_values = mean_curve(:).';             % 显式1×N纵坐标
 std_values = std_curve(:).';
+% +Inf保留在报告中；图中明确标注，不拿任意上限替换指标。
+infinite_positions=isinf(mean_values)&mean_values>0;
+mean_values(infinite_positions)=NaN;
 band_color = [0.30 0.50 0.80];
 fill([x, fliplr(x)], ...
     [mean_values + std_values, fliplr(mean_values - std_values)], ...
@@ -493,6 +501,17 @@ title(title_text, 'Interpreter', 'none');
 xlim([frame_axis(1) - 0.5, frame_axis(end) + 0.5]);
 xticks(frame_axis);
 legend('±1 std', '均值', 'Location', 'best');
+if any(infinite_positions)
+    if all(infinite_positions)
+        ylim([0,1]);yticks([]);legend off;
+        label_height=0.5;
+    else
+        limits=ylim;label_height=limits(2);
+    end
+    text(x(infinite_positions),repmat(label_height,1,sum(infinite_positions)), ...
+        repmat("+Inf",1,sum(infinite_positions)), ...
+        'HorizontalAlignment','center','VerticalAlignment','top');
+end
 print(figure_handle, char(output_path), '-dpng', '-r300');
 end
 

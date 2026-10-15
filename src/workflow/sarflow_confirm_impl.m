@@ -1,7 +1,8 @@
 function summary = sarflow_confirm_impl(cfg)
 %RUN_RANGE_2DSFT_CONFIRM 独立轨迹仅报告，不修改锁定参数。
 if nargin==0,cfg=range_2dsft_config();end
-setup_range_2dsft_paths(cfg);record=sarflow_prepare_run(cfg);locked=sarflow_read_lock(cfg,record);
+directory_guard=setup_range_2dsft_paths(cfg); %#ok<NASGU>
+record=sarflow_prepare_run(cfg);locked=sarflow_read_lock(cfg,record);
 metrics=table();
 for k=1:height(locked)
     rows=sarflow_evaluate_candidate(cfg,record,locked(k,:),"confirm");

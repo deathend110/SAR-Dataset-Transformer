@@ -13,7 +13,8 @@ for scene=cfg.dataset_names
     end
     fit=sarflow_fit_candidate(cfg,record,candidate,scene);
     rows=record.manifest(record.manifest.Scene==scene & record.manifest.Role==role,:);
-    signature=struct("run",record.signature,"candidate",candidate,"role",role,"fit",fit);
+    signature=struct("run",record.signature,"candidate",candidate,"role",role,"fit",fit, ...
+        "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr");
     path=fullfile(p.checkpoints,role,candidate.ParameterKey,scene+"_metrics.mat");
     state=sarflow_load_state(path,signature,struct("signature",signature,"completed",0,"metrics",table()));
     if state.completed~=height(state.metrics)||state.completed>height(rows)||state.completed<0
@@ -35,7 +36,7 @@ for scene=cfg.dataset_names
         [lq,gt,frames]=sarflow_render_sequence(signal,S60,pair,cfg,fit.input,fit.gt,carriers,cache.frames);
         if isempty(cache.frames),cache.frames=frames;sarflow_atomic_save(gtpath,struct("state",cache));end
         row=candidate;row.Scene=scene;row.SequenceID=rows.SequenceID(j);row.Role=role;
-        row=[row,sarflow_sequence_metrics(lq,gt,cfg)]; %#ok<AGROW>
+        row=[row,sarflow_sequence_metrics(lq,gt,cfg,S60)]; %#ok<AGROW>
         if isempty(state.metrics),state.metrics=row;else,state.metrics=[state.metrics;row];end
         if j==1
             % 第一条序列保存LQ/GT上下排列的九帧联系图。
