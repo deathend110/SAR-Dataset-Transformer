@@ -25,30 +25,18 @@ ensure_directory(RESULTS_ROOT);
 checkpoint_path = fullfile(paths.checkpoints,"evaluation",parameter_key,"checkpoint.mat");
 ensure_directory(fileparts(checkpoint_path));
 
-% checkpoint签名包含全部序列名，数据集任何变化都会导致恢复失败
-signature = struct( ...
-    "schema_version", "range_2dsft_psnr_ssim_v1", ...
-    "script", SCRIPT_PATH, ...
-    "dataset_root", string(dataset_root), ...
-    "parameter_key", string(parameter_key), ...
-    "n_frames", N_FRAMES, ...
-    "metric_psnr", "psnr_builtin_uint8", ...
-    "metric_ssim", "ssim_builtin_uint8", ...
-    "sequence_names", all_names);
-signature.dataset_signature = dataset_signature;
+parameters=struct("ParameterKey",string(parameter_key),"n_frames",N_FRAMES);
 
 %% ========================= checkpoint恢复判断 ============================
 results_table = empty_results_table(N_FRAMES);
 if ~FORCE_RERUN && isfile(checkpoint_path)
-    loaded = load(char(checkpoint_path), 'signature', 'results_table');
-    if ~isfield(loaded, 'signature') || ~isfield(loaded, 'results_table') || ...
-            ~isequaln(loaded.signature, signature)
-        error('rangeSFTMetrics:CheckpointMismatch', ...
-            ['checkpoint签名与当前数据集或评估协议不一致，' ...
-            '不能静默复用旧结果：%s。'], checkpoint_path);
-    end
+    loaded=load(char(checkpoint_path));
+    old_parameters=struct();
+    if isfield(loaded,'parameters'),old_parameters=loaded.parameters;
+    elseif isfield(loaded,'signature'),old_parameters=loaded.signature;end
+    sarflow_check_parameters(old_parameters,parameters,"评估参数");
     results_table = loaded.results_table;
-    validate_checkpoint_results(results_table, all_names, scene_keys, ...
+    results_table=validate_checkpoint_results(results_table, all_names, scene_keys, ...
         rstart_ids, cstart_ids, N_FRAMES);
     fprintf('从checkpoint恢复：%d条序列已完成。\n', height(results_table));
 % 进入elseif说明checkpoint存在但FORCE_RERUN=true，忽略旧结果
@@ -102,7 +90,7 @@ for chunk_start = 1:CHUNK_SIZE:numel(pending_global_indices)
         scene_keys(chunk_global_indices), rstart_ids(chunk_global_indices), ...
         cstart_ids(chunk_global_indices), psnr_block, ssim_block, N_FRAMES);
     results_table = [results_table; chunk_rows]; %#ok<AGROW>
-    atomic_save_checkpoint(checkpoint_path, signature, results_table);
+    atomic_save_checkpoint(checkpoint_path, parameters, results_table);
     done_count = done_count + chunk_count;
     fprintf('进度：%d/%d条序列已完成。\n', done_count, total_count);
 end
@@ -230,7 +218,7 @@ end
 end
 
 function signature = load_dataset_signature(dataset_root)
-%LOAD_DATASET_SIGNATURE 尽力读取生产协议签名；失败仅警告不中断。
+%LOAD_DATASET_SIGNATURE 只将历史metadata记入报告，不用于恢复判断。
 signature = [];
 metadata_path = fullfile(dataset_root, "dataset_metadata.mat");
 if ~isfile(metadata_path)
@@ -244,7 +232,7 @@ try
     end
 catch load_error
     warning('rangeSFTMetrics:MetadataUnreadable', ...
-        '无法读取数据集metadata（%s），跳过签名记录。', load_error.message);
+        '无法读取数据集metadata（%s），跳过来源记录。', load_error.message);
 end
 end
 
@@ -320,7 +308,7 @@ for frame_idx = 0:n_frames - 1
 end
 end
 
-function validate_checkpoint_results(results_table, all_names, scene_keys, ...
+function results_table=validate_checkpoint_results(results_table, all_names, scene_keys, ...
         rstart_ids, cstart_ids, n_frames)
 %VALIDATE_CHECKPOINT_RESULTS 拒绝结构不完整或序列元数据错配的checkpoint。
 if ~istable(results_table)
@@ -335,8 +323,7 @@ for frame_idx = 0:n_frames - 1
     metric_variables(2 * frame_idx + 2) = ...
         string(sprintf('SSIM_Frame%03d', frame_idx));
 end
-required_variables = ["SequenceName", "SceneKey", "RstartID", ...
-    "CStartID", metric_variables];
+required_variables = ["SequenceName",metric_variables];
 actual_variables = string(results_table.Properties.VariableNames);
 missing_variables = required_variables(~ismember(required_variables, ...
     actual_variables));
@@ -345,13 +332,6 @@ if ~isempty(missing_variables)
         'checkpoint结果表缺少必要列：%s。', join(missing_variables, ", "));
 end
 
-if ~isstring(results_table.SequenceName) || ...
-        ~isstring(results_table.SceneKey) || ...
-        ~isnumeric(results_table.RstartID) || ...
-        ~isnumeric(results_table.CStartID)
-    error('rangeSFTMetrics:CheckpointColumnType', ...
-        'checkpoint结果表的序列名称或元数据列类型不符合评估协议。');
-end
 for variable_name = metric_variables
     if ~isnumeric(results_table.(variable_name))
         error('rangeSFTMetrics:CheckpointColumnType', ...
@@ -371,15 +351,10 @@ if ~all(is_known_sequence)
         'checkpoint包含当前数据集不存在的序列：%s。', unknown_names);
 end
 
-metadata_matches = ...
-    isequal(results_table.SceneKey(:), scene_keys(source_indices)) && ...
-    isequaln(results_table.RstartID(:), rstart_ids(source_indices)) && ...
-    isequaln(results_table.CStartID(:), cstart_ids(source_indices));
-if ~metadata_matches
-    error('rangeSFTMetrics:CheckpointMetadataMismatch', ...
-        ['checkpoint中的SceneKey、RstartID或CStartID与SequenceName不对应，' ...
-        '请人工核查并移除错误checkpoint后重新评估。']);
-end
+% 元信息可从序列名推导，不再重复核对来源描述。
+results_table.SceneKey=scene_keys(source_indices);
+results_table.RstartID=rstart_ids(source_indices);
+results_table.CStartID=cstart_ids(source_indices);
 
 metric_values = extract_frame_matrix(results_table, "PSNR_Frame", n_frames);
 ssim_values = extract_frame_matrix(results_table, "SSIM_Frame", n_frames);
@@ -455,11 +430,11 @@ for frame_idx = 1:n_frames
 end
 end
 
-function atomic_save_checkpoint(file_path, signature, results_table)
+function atomic_save_checkpoint(file_path, parameters, results_table)
 %ATOMIC_SAVE_CHECKPOINT 同目录临时文件原子提交checkpoint。
 temporary = string(tempname(char(string(fileparts(file_path))))) + ".mat";
 cleanup = onCleanup(@() delete_if_exists(temporary));
-save(char(temporary), 'signature', 'results_table');
+save(char(temporary), 'parameters', 'results_table');
 [ok, message] = movefile(temporary, file_path);
 if ~ok
     error('rangeSFTMetrics:CheckpointSave', ...

@@ -314,17 +314,7 @@ if ~isfield(loaded, 'scene_stats')
         '已有MAT缺少scene_stats：%s', file_path);
 end
 existing = loaded.scene_stats;
-required = ["schema_version", "scene_name", "scene_key", ...
-    "protocol", "source_manifest", "gt"];
-if ~all(isfield(existing, required)) || ...
-        string(existing.schema_version) ~= string(header.schema_version) || ...
-        string(existing.scene_name) ~= string(header.scene_name) || ...
-        string(existing.scene_key) ~= string(header.scene_key) || ...
-        ~isequaln(existing.protocol, header.protocol) || ...
-        ~isequaln(existing.source_manifest, header.source_manifest)
-    error('scenePercentiles:SceneSourceMismatch', ...
-        '已有场景MAT与当前数据或协议不一致：%s', file_path);
-end
+sarflow_check_parameters(existing.protocol,header.protocol,"场景GT统计");
 gt_stats = existing.gt;
 end
 
@@ -647,20 +637,10 @@ scene_stats.updated_at = now_text;
 atomic_save(file_path, struct("scene_stats", scene_stats));
 end
 
-function verify_scene_header(scene_stats, header, file_path)
+function verify_scene_header(scene_stats, header, ~)
 %VERIFY_SCENE_HEADER 防止新统计写入不兼容的已有场景MAT。
-% 直接逐字段比较场景身份、统计协议和完整源清单，不计算哈希。
-required = ["schema_version", "scene_name", "scene_key", ...
-    "protocol", "source_manifest", "gt", "entries", "created_at"];
-if ~all(isfield(scene_stats, required)) || ...
-        string(scene_stats.schema_version) ~= string(header.schema_version) || ...
-        string(scene_stats.scene_name) ~= string(header.scene_name) || ...
-        string(scene_stats.scene_key) ~= string(header.scene_key) || ...
-        ~isequaln(scene_stats.protocol, header.protocol) || ...
-        ~isequaln(scene_stats.source_manifest, header.source_manifest)
-    error('scenePercentiles:SceneSourceMismatch', ...
-        '已有场景MAT与当前数据清单或协议不一致：%s', file_path);
-end
+% 只核对归一化及成像所需的实际参数。
+sarflow_check_parameters(scene_stats.protocol,header.protocol,"场景统计");
 end
 
 function output = append_table(input, row)
@@ -684,24 +664,13 @@ if ~isfolder(path)
 end
 end
 
-function state = load_checkpoint(file_path, checkpoint_config, initial_state)
-%LOAD_CHECKPOINT 恢复长时间统计的序列级进度。
-% 不计算哈希；直接保存并逐字段比较完整配置和场景清单。
-% 文件不存在时返回initial_state，配置不一致时拒绝静默复用。
-state = initial_state;
-if ~isfile(file_path)
-    return;
+function state = load_checkpoint(file_path,checkpoint_config,initial_state)
+%LOAD_CHECKPOINT 只比较当前统计所需的数值参数，不比较完整清单与来源。
+state=sarflow_load_state(file_path,initial_state);
+sarflow_check_parameters(sarflow_state_parameters(state),checkpoint_config.parameters,"正式统计参数");
+if isfield(state,'config')&&isfield(state.config,'protocol')
+    sarflow_check_parameters(state.config.protocol,checkpoint_config.protocol,"正式统计协议参数");
 end
-loaded = load(file_path, 'state');
-if ~isfield(loaded, 'state') || ~isfield(loaded.state, 'config')
-    error('scenePercentiles:CheckpointSchema', ...
-        'checkpoint缺少完整配置：%s', file_path);
-end
-if ~isequaln(loaded.state.config, checkpoint_config)
-    error('scenePercentiles:CheckpointConfigMismatch', ...
-        'checkpoint配置或场景清单与当前运行不一致：%s', file_path);
-end
-state = loaded.state;
 end
 
 function atomic_save(file_path, payload)

@@ -9,8 +9,8 @@ carriers=[];metrics=table();
 for scene=cfg.dataset_names
     rows=record.manifest(record.manifest.Scene==scene & record.manifest.Role==role,:);
     fitpath=fullfile(p.checkpoints,"search","fits",candidate.ParameterKey,scene,"fit.mat");
-    fs=struct("run",record.signature,"candidate",candidate,"scene",scene);
-    fitted=sarflow_load_state(fitpath,fs,struct("signature",fs,"fit",struct()));
+    fitted=sarflow_load_state(fitpath,struct("parameters",sarflow_parameters(candidate),"fit",struct()));
+    sarflow_check_parameters(sarflow_state_parameters(fitted),candidate,"候选拟合");
     need_fit=isempty(fieldnames(fitted.fit));prepared=[];
     if role=="confirm"&&need_fit
         error('sarflow:FitMissing','确认前必须完成搜索拟合。');
@@ -27,10 +27,9 @@ for scene=cfg.dataset_names
     else
         fit=fitted.fit;
     end
-    signature=struct("run",record.signature,"candidate",candidate,"role",role,"fit",fit, ...
-        "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr");
     path=fullfile(p.checkpoints,role,candidate.ParameterKey,scene+"_metrics.mat");
-    state=sarflow_load_state(path,signature,struct("signature",signature,"completed",0,"metrics",table()));
+    state=sarflow_load_state(path,struct("parameters",sarflow_parameters(candidate),"completed",0,"metrics",table()));
+    sarflow_check_parameters(sarflow_state_parameters(state),candidate,"候选评价");
     if state.completed~=height(state.metrics)||state.completed>height(rows)||state.completed<0
         error('sarflow:CheckpointRows','评价断点行数不正确。');
     end

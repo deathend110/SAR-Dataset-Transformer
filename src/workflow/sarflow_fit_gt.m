@@ -3,9 +3,9 @@ function stats = sarflow_fit_gt(cfg, record, scene, session)
 if nargin<4,session=SarflowSearchSession(cfg);end
 p=sarflow_paths(cfg);
 rows=record.manifest(record.manifest.Scene==scene & record.manifest.Role=="search",:);
-signature=struct("run",record.signature,"rows",rows);
 path=fullfile(p.checkpoints,"search","gt",scene,"state.mat");
-state=sarflow_load_state(path,signature,struct("signature",signature,"completed",0,"stats",struct()));
+state=sarflow_load_state(path,struct("parameters",sarflow_parameters(cfg),"completed",0,"stats",struct()));
+sarflow_check_parameters(sarflow_state_parameters(state),cfg,"GT统计");
 if ~isempty(fieldnames(state.stats)),stats=state.stats;return;end
 % 旧版未完成的场景从头拟合，保留旧chunk和断点，不将其当作完整结果。
 S60=load(cfg.parameter_file_60);s=cfg.sequence;n=height(rows);

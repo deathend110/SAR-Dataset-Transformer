@@ -1,5 +1,5 @@
 classdef SarflowSearchSession < handle
-    % 搜索/确认会话内共享缓存；不持久化，不改变科学签名。
+    % 搜索/确认会话内共享缓存；不持久化，不影响恢复参数。
     properties (SetAccess=private)
         budget
         bytes = 0
@@ -45,9 +45,7 @@ classdef SarflowSearchSession < handle
             [item,found]=obj.get("gt_"+row.SequenceID);
             frames=[];
             if found
-                if ~isequaln(item.stats,stats)
-                    error('sarflow:GTCacheStats','会话中同一序列的GT归一化统计发生变化。');
-                end
+                sarflow_check_parameters(item.stats,stats,"GT归一化");
                 frames=item.frames;
             end
         end

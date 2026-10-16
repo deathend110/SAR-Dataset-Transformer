@@ -1,11 +1,9 @@
-function state = sarflow_load_state(path, signature, initial)
-%LOAD_STATE 严格比较完整签名，拒绝配置不一致的断点。
+function state = sarflow_load_state(path,initial)
+%LOAD_STATE 只读取进度，不接收或检查签名、版本与来源信息。
 state=initial;
 if isfile(path)
     x=load(path,'state');
-    if ~isfield(x,'state')||~isfield(x.state,'signature')||~isequaln(x.state.signature,signature)
-        error('sarflow:CheckpointMismatch','checkpoint签名不一致：%s',path);
-    end
+    if ~isfield(x,'state'),error('sarflow:CheckpointState','检查点缺少state：%s',path);end
     state=x.state;
 end
 end

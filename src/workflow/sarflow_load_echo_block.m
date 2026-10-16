@@ -2,11 +2,10 @@ function signal60 = sarflow_load_echo_block(manifest_row, S60, block_width, cach
 %LOAD_ECHO_BLOCK 读取清单指定的180MHz轨迹连续块并转换为60MHz。
 % manifest_row提供文件、变量名和CStart；persistent缓存避免重复读同一轨迹。
 % 输出固定为S60.nrn×block_width复回波，供H/L两分支共同使用。
-persistent cached_path cached_raw cached_stamp
+persistent cached_path cached_raw
 if nargin<4,cache_trajectory=true;end
 file_path = string(manifest_row.FilePath(1));
-stamp = [manifest_row.FileBytes(1), manifest_row.FileDatenum(1)];
-if ~cache_trajectory || isempty(cached_path) || cached_path ~= file_path || ~isequaln(cached_stamp, stamp)
+if ~cache_trajectory || isempty(cached_path) || cached_path ~= file_path
     variable_name = char(manifest_row.EchoVariable(1));
     loaded = load(file_path, variable_name);
     if ~isfield(loaded, variable_name)
@@ -17,7 +16,6 @@ if ~cache_trajectory || isempty(cached_path) || cached_path ~= file_path || ~ise
     if cache_trajectory
         cached_raw = raw;
         cached_path = file_path;
-        cached_stamp = stamp;
     end
 else
     raw = cached_raw;

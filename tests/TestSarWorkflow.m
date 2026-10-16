@@ -124,14 +124,39 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             t.verifyEqual(actual,expected);t.verifyEqual(actual_info,info);
         end
 
-        function checkpointRejectsMutation(t)
+        function checkpointReadsOldFormatAndChecksOnlyParameters(t)
             folder=string(tempname);mkdir(folder);
             cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
-            path=fullfile(folder,"state.mat");sig=struct("q",1.75,"seed",42);
-            state=struct("signature",sig,"completed",2);
+            path=fullfile(folder,"state.mat");parameters=struct("Q",1.75,"STRdB",0);
+            state=struct("signature",struct("candidate",parameters,"version","old"),"completed",2);
             sarflow_atomic_save(path,struct("state",state));
-            out=sarflow_load_state(path,sig,struct());t.verifyEqual(out.completed,2);
-            sig.q=2;t.verifyError(@()sarflow_load_state(path,sig,struct()),'sarflow:CheckpointMismatch');
+            out=sarflow_load_state(path,struct());t.verifyEqual(out.completed,2);
+            sarflow_check_parameters(sarflow_state_parameters(out),parameters);
+            parameters.Q=2;
+            t.verifyError(@()sarflow_check_parameters(sarflow_state_parameters(out),parameters),'sarflow:ParameterMismatch');
+        end
+
+        function readOnlyActualCompletedCoarseCheckpoint(t)
+            cfg=range_2dsft_config();p=sarflow_paths(cfg);
+            path=fullfile(p.checkpoints,"search","coarse_pair_1.mat");
+            record_path=fullfile(p.protocol,"run_record.mat");
+            t.assumeTrue(isfile(path)&&isfile(record_path),"需要本机原有完整粗搜索检查点。");
+            loaded=load(record_path,'record');record=loaded.record;
+            for name=string(fieldnames(record.signature.config)).'
+                cfg.(name)=record.signature.config.(name);
+            end
+            cfg.sampling_mode="hlh";
+            S=load(cfg.parameter_file_60);
+            candidates=sarflow_candidate_grid(cfg,S,cfg.search.hl_pairs(1,1),cfg.search.hl_pairs(1,2));
+            state=sarflow_load_state(path,struct());
+            % 只有完整旧汇总才调用run_grid，防止本测试意外启动搜索。
+            t.assumeTrue(isfield(state,'metrics')&&state.completed==height(candidates));
+            session=SarflowSearchSession(cfg);
+            actual=sarflow_run_grid(cfg,record,candidates,"coarse_pair_1",session);
+            t.verifyEqual(actual,state.metrics);
+            t.verifyEqual(session.raw_reads,0);t.verifyEqual(session.rc_calls,0);
+            t.verifyEqual(session.carrier_builds,0);
+            fprintf('只读旧检查点恢复：%d候选、%d条指标，RC=0、原始回波读取=0。\n',state.completed,height(actual));
         end
 
         function frozenManifestAndStagePrerequisites(t)
@@ -147,11 +172,16 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             end
             first=run_range_2dsft_workflow(cfg);second=run_range_2dsft_workflow(cfg);
             t.verifyEqual(first.record,second.record);
-            % 缓存容量和新执行选项均不进入科学签名，旧配置可继续恢复。
+            % 缓存容量不参与恢复参数核对，旧配置可继续恢复。
             changed=cfg;changed.search_runtime.cache_gb=0.25;
             resumed=run_range_2dsft_workflow(changed);t.verifyEqual(resumed.record,first.record);
             resumed=run_range_2dsft_workflow(rmfield(cfg,'search_runtime'));
             t.verifyEqual(resumed.record,first.record);
+            relocated=cfg;relocated.data_root=fullfile(folder,"relocated");
+            copyfile(cfg.data_root,relocated.data_root);
+            resumed=run_range_2dsft_workflow(relocated);
+            t.verifyEqual(resumed.record.manifest.CStart,first.record.manifest.CStart);
+            t.verifyTrue(all(startsWith(resumed.record.manifest.FilePath,relocated.data_root)));
             m=first.record.manifest;t.verifyEqual(sum(m.Role=="search"),5);t.verifyEqual(sum(m.Role=="confirm"),2);
             t.verifyEqual(m.File(m.Role=="confirm"),["rstart 3.mat";"rstart 5.mat"]);
             t.verifyEmpty(intersect(m.File(m.Role=="search"),m.File(m.Role=="confirm")));
@@ -170,7 +200,7 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
                 cfg.stage=stage;
                 t.verifyError(@()run_range_2dsft_workflow(cfg),'sarflow:Prerequisite');
             end
-            cfg.search.STR_grid=0;t.verifyError(@()run_range_2dsft_workflow(cfg),'sarflow:RunMismatch');
+            cfg.search.STR_grid=0;t.verifyError(@()run_range_2dsft_workflow(cfg),'sarflow:ParameterMismatch');
         end
 
 
@@ -211,8 +241,7 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
                 ids=manifest.SequenceID(manifest.Role==role);
                 rows=repmat(candidate,numel(ids),1);rows.Scene=repmat("Scene",numel(ids),1);
                 rows.SequenceID=ids;rows.Role=repmat(role,numel(ids),1);
-                signature=struct("run",record.signature,"candidate",candidate,"role",role,"fit",fit, ...
-                    "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr");
+                signature=struct("candidate",candidate); % 最早的断点没有指标版本或完整运行记录。
                 state=struct("signature",signature,"completed",numel(ids),"metrics",rows);
                 sarflow_atomic_save(fullfile(p.checkpoints,role,candidate.ParameterKey,"Scene_metrics.mat"),struct("state",state));
                 t.verifyEqual(sarflow_evaluate_candidate(cfg,record,candidate,role),rows);
@@ -250,29 +279,21 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             t.verifyEqual(fullfile(paths.dataset,key,"GT"),fullfile(cfg.repo_root,"dataset_range_2dsft",key,"GT"));
         end
 
-        function reuseChecksActualNormalizationNotOnlyParameterKey(t)
-            folder=string(tempname);mkdir(folder);
-            cleanup=onCleanup(@()TestSarWorkflow.removeFixture(folder));
-            stats=struct('Modality',"JointHL",'VMin',0.1,'VMax',2,'ImageCount',90, ...
-                'PixelCount',90*600^2,'LowPercentile',0.99,'HighPercentile',99.9,'Method',"midpoint_exact_tall");
-            entry=struct('parameter_key',"key",'parameters',struct('QHigh',2.5), ...
-                'input_stats',stats,'effective_sampling',struct('H',2.5,'L',1.5),'updated_at',"entry_time");
-            scene_stats=struct('scene_name',"Scene",'source_manifest',table(10,'VariableNames',{'FileBytes'}), ...
-                'protocol',struct('roi_size',600),'gt',stats,'entries',entry,'updated_at',"scene_time");
-            scene_stats.gt.Modality="GT";
-            oldfile=fullfile(folder,"old.mat");newfile=fullfile(folder,"new.mat");
-            save(oldfile,'scene_stats');save(newfile,'scene_stats');
-            source=struct('StatsFile',oldfile,'SceneUpdatedAt',"scene_time",'EntryUpdatedAt',"entry_time");
-            old=struct('parameter_key',"key",'stats_root',folder,'normalization_protocol',scene_stats.protocol, ...
-                'normalization_sources',source);
-            current=old;current.normalization_sources.StatsFile=newfile;
-            current.workflow=struct('locked_file',"new_lock");
-            current.normalization_snapshot=sarflow_normalization_snapshot(current);
-            t.verifyTrue(sarflow_dataset_compatible(old,current));
-            different=current;different.normalization_snapshot.input.VMax=3;
-            t.verifyFalse(sarflow_dataset_compatible(old,different));
-            scene_stats.updated_at="changed";save(oldfile,'scene_stats');
-            t.verifyFalse(sarflow_dataset_compatible(old,current));
+        function actualParametersIgnorePathsVersionsAndTimestamps(t)
+            cfg=range_2dsft_config();old=cfg;
+            old.repo_root="old_repo";old.results_root="old_results";old.data_root="old_data";
+            old.version="old";old.parameter_file_60="old_params.mat";
+            old.timestamp=123;old.source_manifest=table(1);
+            old.stats.memory_gb=0.01;old.search_runtime.cache_gb=0.1;
+            sarflow_check_parameters(old,cfg);
+            old.sequence.patch_size=511;
+            t.verifyError(@()sarflow_check_parameters(old,cfg),'sarflow:ParameterMismatch');
+            old.sequence=cfg.sequence;
+            a=struct("Fs",60,"R_total",600,"Ba",1,"fnrn",ones(3));
+            b=a;b.fnrn=zeros(3);sarflow_check_parameters(a,b);
+            b.Ba=2;t.verifyError(@()sarflow_check_parameters(a,b),'sarflow:ParameterMismatch');
+            old.search.hl_pairs(1,1)=5;
+            t.verifyError(@()sarflow_check_parameters(old,cfg),'sarflow:ParameterMismatch');
         end
 
         function commitStagesOutsideDatasetAndResumes(t)

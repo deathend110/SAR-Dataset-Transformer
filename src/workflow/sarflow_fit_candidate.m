@@ -3,8 +3,8 @@ function fit = sarflow_fit_candidate(cfg,record,candidate,scene,session,prepared
 if nargin<5,session=SarflowSearchSession(cfg);end
 p=sarflow_paths(cfg);
 path=fullfile(p.checkpoints,"search","fits",candidate.ParameterKey,scene,"fit.mat");
-signature=struct("run",record.signature,"candidate",candidate,"scene",scene);
-state=sarflow_load_state(path,signature,struct("signature",signature,"fit",struct()));
+state=sarflow_load_state(path,struct("parameters",sarflow_parameters(candidate),"fit",struct()));
+sarflow_check_parameters(sarflow_state_parameters(state),candidate,"候选拟合");
 if ~isempty(fieldnames(state.fit)),fit=state.fit;return;end
 rows=record.manifest(record.manifest.Scene==scene & record.manifest.Role=="search",:);
 gt=sarflow_fit_gt(cfg,record,scene,session);

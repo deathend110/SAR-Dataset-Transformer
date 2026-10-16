@@ -31,10 +31,9 @@ for k=1:size(pairs,1)
     if isempty(locked),locked=ranked(1,:);rankings=ranked;
     else,locked=[locked;ranked(1,:)];rankings=[rankings;ranked];end %#ok<AGROW>
 end
-% CSV是可读副本；MAT和完整运行签名是下游读取依据。
+% CSV是可读副本；下游从MAT读取已完成的锁定参数。
 sarflow_locked_contacts(cfg,record,locked,session);
-sarflow_atomic_save(p.lock,struct("locked",locked,"rankings",rankings,"record",record,"complete",true, ...
-    "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr"));
+sarflow_atomic_save(p.lock,struct("locked",locked,"rankings",rankings,"record",record,"complete",true));
 writetable(locked,fullfile(p.search,"locked_parameters.csv"));
 writetable(rankings,fullfile(p.search,"candidate_rankings.csv"));
 sarflow_atomic_save(fullfile(p.search,"runtime.mat"),struct("runtime",session.snapshot()));

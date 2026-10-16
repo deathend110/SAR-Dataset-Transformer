@@ -46,13 +46,14 @@ for stage=stages
 end
 end
 
-function require_confirmation(p,record,locked)
+function require_confirmation(p,~,locked)
 path=fullfile(p.confirmation,"confirmation.mat");
 if ~isfile(path),error('sarflow:Prerequisite','请先完成confirm阶段。');end
 x=load(path);
-if ~isfield(x,'complete')||~isequal(x.complete,true)||~isequaln(x.record,record)||~isequaln(x.locked,locked)
-    error('sarflow:ConfirmationMismatch','确认结果与当前锁定参数不一致。');
+if ~isfield(x,'complete')||~isequal(x.complete,true)
+    error('sarflow:ConfirmationMismatch','确认阶段尚未完成。');
 end
+sarflow_check_parameters(x.locked,locked,"确认锁定参数");
 end
 
 function write_marker(p,stage,record,locked)
@@ -60,11 +61,12 @@ sarflow_atomic_save(fullfile(p.checkpoints,"workflow",stage+"_complete.mat"), ..
     struct("record",record,"locked",locked,"complete",true));
 end
 
-function require_marker(p,stage,record,locked)
+function require_marker(p,stage,~,locked)
 path=fullfile(p.checkpoints,"workflow",stage+"_complete.mat");
 if ~isfile(path),error('sarflow:Prerequisite','请先完成%s阶段。',stage);end
 x=load(path);
-if ~isfield(x,'complete')||~isequal(x.complete,true)||~isequaln(x.record,record)||~isequaln(x.locked,locked)
-    error('sarflow:PrerequisiteMismatch','前置阶段与本次运行不一致。');
+if ~isfield(x,'complete')||~isequal(x.complete,true)
+    error('sarflow:PrerequisiteMismatch','前置阶段尚未完成。');
 end
+sarflow_check_parameters(x.locked,locked,"前置阶段参数");
 end

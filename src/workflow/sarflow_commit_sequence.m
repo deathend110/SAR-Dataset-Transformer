@@ -6,12 +6,12 @@ end
 if sarflow_sequence_output(paths,key,name)=="complete",return;end
 context=fullfile(paths.checkpoints,"generation",key,"metadata.mat");
 if isfile(context)
-    old=load(context,'signature');
-    if ~isequaln(old.signature,metadata)
-        error('sarflow:CheckpointMismatch','生成断点的生产配置不一致。');
-    end
+    old=load(context);
+    if isfield(old,'parameters'),previous=old.parameters;
+    elseif isfield(old,'signature'),previous=old.signature;else,previous=struct();end
+    sarflow_check_parameters(previous,metadata,"生成参数");
 else
-    sarflow_atomic_save(context,struct("signature",metadata));
+    sarflow_atomic_save(context,struct("parameters",sarflow_parameters(metadata)));
 end
 for role=["LQ","GT"]
     folder=fullfile(paths.dataset,key,role);

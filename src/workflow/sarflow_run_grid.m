@@ -2,9 +2,8 @@ function metrics = sarflow_run_grid(cfg,record,candidates,label,session)
 %RUN_GRID 候选进度只保存完成位置；详细指标从场景断点组装。
 if nargin<5,session=SarflowSearchSession(cfg);end
 p=sarflow_paths(cfg);path=fullfile(p.checkpoints,"search",label+".mat");
-signature=struct("run",record.signature,"candidates",candidates, ...
-    "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr");
-state=sarflow_load_state(path,signature,struct("signature",signature,"completed",0));
+state=sarflow_load_state(path,struct("parameters",sarflow_parameters(candidates),"completed",0));
+sarflow_check_parameters(sarflow_state_parameters(state),candidates,"候选网格");
 if state.completed<0||state.completed>height(candidates)||mod(state.completed,1)~=0
     error('sarflow:GridCheckpoint','候选进度无效。');
 end
@@ -19,7 +18,7 @@ for k=start:height(candidates)
     rows=sarflow_evaluate_candidate(cfg,record,candidates(k,:),"search",session);
     if isempty(metrics),metrics=rows;else,metrics=[metrics;rows];end %#ok<AGROW>
     if k>completed
-        state=struct("signature",signature,"completed",k);
+        state=struct("parameters",sarflow_parameters(candidates),"completed",k);
         sarflow_atomic_save(path,struct("state",state));
     end
 end

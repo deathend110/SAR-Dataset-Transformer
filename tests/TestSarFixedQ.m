@@ -76,10 +76,13 @@ classdef TestSarFixedQ < matlab.unittest.TestCase
             locked=locked([2,1,3],:);
             sarflow_atomic_save(p.lock,struct("record",record,"locked",locked,"complete",true, ...
                 "metric_protocol","uint8_actual_crop_v2_positive_inf_psnr"));
-            t.verifyError(@()sarflow_read_lock(cfg,record),'sarflow:LockedPairs');
-            % 修正掩膜后，不能继续把旧指标口径的参数表当作新锁定结果。
+            t.verifyError(@()sarflow_read_lock(cfg,record),'sarflow:ParameterMismatch');
+            other=removevars(actual,'Q');other.QHigh=actual.Q;other.QLow=ones(height(actual),1);
+            sarflow_atomic_save(p.lock,struct("locked",other,"complete",true));
+            t.verifyError(@()sarflow_read_lock(cfg,record),'sarflow:ParameterMismatch');
+            % 旧文件没有版本标记也可读取，不因历史标记触发重算。
             sarflow_atomic_save(p.lock,struct("record",record,"locked",actual,"complete",true));
-            t.verifyError(@()sarflow_read_lock(cfg,record),'sarflow:LockMetricProtocol');
+            t.verifyEqual(sarflow_read_lock(cfg,record),actual);
         end
 
         function realEchoStatisticsGenerationAndMetrics(t)
@@ -146,6 +149,19 @@ classdef TestSarFixedQ < matlab.unittest.TestCase
                     v.Q,results.PSNR_Mean,results.SSIM_Mean);
                 if k==1,first_output=output;first_key=key;end
             end
+            % 修改临时产物的路径、时间及版本记录，实际参数不变，应继续复用。
+            stats_path=fullfile(paths.stats,"bangkok.mat");
+            saved_stats=load(stats_path);saved_stats.scene_stats.schema_version="old";
+            saved_stats.scene_stats.protocol.parameter_file_60="old_location.mat";
+            saved_stats.scene_stats.updated_at="different_time";
+            sarflow_atomic_save(stats_path,saved_stats);
+            run_range_2dsft_stats(cfg,parameters);
+            metadata_path=fullfile(first_output,"dataset_metadata.mat");
+            changed_metadata=load(metadata_path);
+            changed_metadata.dataset_metadata.signature.schema_version="old";
+            changed_metadata.dataset_metadata.signature.script="old_entry.m";
+            changed_metadata.dataset_metadata.signature.normalization_sources=struct("StatsFile","gone.mat");
+            sarflow_atomic_save(metadata_path,changed_metadata);
             % 完整真实PNG必须复用，不因再次执行而重写。
             before=dir(fullfile(first_output,"LQ","*","*.png"));
             run_range_2dsft_generate(cfg,sarflow_statistics("parameter_struct",parameters(1,:)));
@@ -166,10 +182,12 @@ classdef TestSarFixedQ < matlab.unittest.TestCase
             save(fullfile(destination,"dataset_metadata.mat"),'dataset_metadata');
             perfect=run_range_2dsft_evaluate(identity,first_key);
             t.verifyEqual(perfect.PSNR_Mean,Inf);t.verifyEqual(perfect.SSIM_Mean,1);
+            dataset_metadata.signature=struct("schema_version","old","source_path","changed");
+            save(fullfile(destination,"dataset_metadata.mat"),'dataset_metadata');
             resumed=run_range_2dsft_evaluate(identity,first_key);t.verifyEqual(resumed,perfect);
             p=sarflow_paths(identity);
             checkpoint=fullfile(p.checkpoints,"evaluation",first_key,"checkpoint.mat");
-            saved=load(checkpoint,'signature','results_table');signature=saved.signature;
+            saved=load(checkpoint);signature=saved.parameters; % 重新保存为旧封套，检查旧格式读取。
             for bad=[NaN,-Inf]
                 results_table=saved.results_table;results_table.PSNR_Frame000(:)=bad;
                 save(checkpoint,'signature','results_table');

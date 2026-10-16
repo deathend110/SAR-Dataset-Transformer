@@ -1,7 +1,7 @@
 function record = sarflow_prepare_run(cfg)
-%PREPARE_RUN 只检查文件头与网格；固定清单并严格核验运行签名。
+%PREPARE_RUN 首次建立来源清单；恢复只核对实际参数并复用原抽样。
 fixed=sarflow_is_fixed(cfg);
-sarflow_search_cache_budget(cfg); % 执行选项只验证，不进入科学配置签名。
+sarflow_search_cache_budget(cfg);
 if fixed
     q=cfg.search.fixed_q_values;
     if ~isnumeric(q)||~isvector(q)||isempty(q)||any(~isfinite(q))||any(q<1)||numel(unique(q))~=numel(q)
@@ -33,7 +33,8 @@ if numel(unique(cfg.dataset_names))~=numel(cfg.dataset_names)||isempty(cfg.datas
 end
 % 固定成像协议与正式生产入口一致。
 defaults=range_2dsft_config();
-if ~isequaln(cfg.sequence,defaults.sequence)||(~fixed&&cfg.energy_buffer~=64)|| ...
+sarflow_check_parameters(cfg.sequence,defaults.sequence,"九帧几何");
+if (~fixed&&cfg.energy_buffer~=64)|| ...
         cfg.generate.stride_frames~=3||cfg.nyquist_margin<=0||cfg.nyquist_margin>=1|| ...
         cfg.low_percentile<0||cfg.high_percentile>100||cfg.low_percentile>=cfg.high_percentile|| ...
         cfg.stats.blocks_per_file<1||mod(cfg.stats.blocks_per_file,1)~=0||cfg.stats.memory_gb<=0
@@ -51,14 +52,24 @@ if ~all(isfield(S60,required))
 end
 protocol=sarflow_statistics("build_protocol",cfg,S60,cfg.stats.blocks_per_file, ...
     cfg.low_percentile,cfg.high_percentile,cfg.sequence.roi_size,cfg.energy_buffer);
-% 枚举全部来源信息供恢复核验；这里只读取MAT变量头，不加载回波。
-inventory=sarflow_statistics("build_scene_manifest",cfg,1);
+p=sarflow_paths(cfg);path=fullfile(p.protocol,"run_record.mat");
+resuming=isfile(path);
+if resuming
+    saved=load(path,'record');record=saved.record;
+    sarflow_check_parameters(record.signature.config,cfg,"工作流");
+    sarflow_check_parameters(record.signature.S60,S60,"成像参数");
+    inventory=record.signature.inventory;
+    inventory.FilePath=fullfile(cfg.data_root,inventory.Scene,inventory.File);
+else
+    inventory=sarflow_statistics("build_scene_manifest",cfg,1);
+end
 if numel(unique(inventory.SceneKey))~=numel(cfg.dataset_names)
     error('sarflow:SceneKeyCollision','场景名称映射到重复的输出键。');
 end
 if S60.nrn~=cfg.sequence.signal_height || S60.nan~=cfg.sequence.signal_width
     error('sarflow:ImagingSize','FS60成像尺寸与生产协议不一致。');
 end
+if ~resuming
 for j=1:height(inventory)
     info=whos('-file',inventory.FilePath(j));
     info=info(strcmp(string({info.name}),inventory.EchoVariable(j)));
@@ -67,17 +78,17 @@ for j=1:height(inventory)
         error('sarflow:EchoSchema','回波必须为足够距离行数的复数single/double矩阵：%s',inventory.FilePath(j));
     end
 end
+end
 if any(inventory.RawWidth<cfg.sequence.block_width+cfg.stats.blocks_per_file-1)
     error('sarflow:ShortSource','存在无法完成正式统计的轨迹。');
 end
-if ~isstring(cfg.search.exclude_files)||~isvector(cfg.search.exclude_files)&&~isempty(cfg.search.exclude_files)|| ...
-        ~all(ismember(cfg.search.exclude_files,inventory.FilePath))
-    error('sarflow:ExcludedFiles','exclude_files必须是清单中轨迹的完整路径string向量。');
+if ~isstring(cfg.search.exclude_files)||~isvector(cfg.search.exclude_files)&&~isempty(cfg.search.exclude_files)
+    error('sarflow:ExcludedFiles','exclude_files必须为string向量。');
 end
 config=rmfield(cfg,{'stage','provenance'});
 if isfield(config,'search_runtime'),config=rmfield(config,'search_runtime');end
 config.evaluate=rmfield(config.evaluate,{'workers','chunk_size'});
-% 保持已有混合模式签名原样；不相关的倍率配置不影响本模式恢复。
+% 保留来源记录格式；只记录本模式使用的倍率参数。
 if fixed
     config.search=rmfield(config.search,'hl_pairs');
     config=rmfield(config,'energy_buffer');
@@ -85,6 +96,7 @@ else
     config=rmfield(config,'sampling_mode');
     config.search=rmfield(config.search,'fixed_q_values');
 end
+% 以下信息仅作来源追溯，恢复不比较整个封套。
 signature=struct("config",config,"inventory",inventory,"S60",S60,"protocol",protocol);
 coarse=table();
 for k=1:size(pairs,1)
@@ -94,13 +106,9 @@ end
 if numel(unique(coarse.ParameterKey))~=height(coarse)
     error('sarflow:CandidateKeyCollision','不同候选映射到重复的ASCII参数键。');
 end
-p=sarflow_paths(cfg); path=fullfile(p.protocol,"run_record.mat");
-if isfile(path)
-    old=load(path,'record');
-    if ~isfield(old,'record')||~isequaln(old.record.signature,signature)
-        error('sarflow:RunMismatch','配置或源文件与已有工作流记录不一致；请显式处理旧断点后再运行，不能混用结果。');
-    end
-    record=old.record; % 原清单是唯一恢复依据，不重新抽样。
+if resuming
+    % 路径是定位信息，数据根目录变更时按场景及文件名重定位，不比较旧路径。
+    record.manifest.FilePath=fullfile(cfg.data_root,record.manifest.Scene,record.manifest.File);
 else
     manifest=make_manifest(cfg,inventory);
     ranking="scene_equal: MeanSSIM,LRegionSSIM,WorstSSIM,MeanPSNR,ParameterKey";

@@ -19,7 +19,6 @@ OUTPUT_PARENT = paths.dataset;
 %% ========================== 配置与统计预检 ===============================
 range_fft_cache_enabled = evaluate_range_fft_cache_flag( ...
     ENABLE_RANGE_FFT_CACHE);
-validate_public_dependencies(REPO_ROOT);
 if sarflow_is_fixed(cfg)~=isfield(PARAMETERS,'Q')
     error('rangeSFTDataset:SamplingMode','生产参数与当前采样模式不一致。');
 end
@@ -34,9 +33,11 @@ pair = make_range_sft_pair(PARAMETERS);
 
 normalization = load_all_scene_normalization( ...
     STATS_ROOT, SCENE_NAMES, PARAMETERS, SEQUENCE, ...
-    ENERGY_BUFFER, S60, grid_h, grid_l);
-if ~strcmpi(string(normalization(1).Protocol.parameter_file_60), string(PARAMETER_FILE))
-    error('rangeSFTDataset:StatsParameterFile', '统计与生产使用的参数文件不同。');
+    ENERGY_BUFFER, S60);
+for idx=1:numel(normalization)
+    expected=struct("low_percentile",cfg.low_percentile,"high_percentile",cfg.high_percentile, ...
+        "roi_size",SEQUENCE.roi_size);
+    sarflow_check_parameters(normalization(idx).Protocol,expected,"生产归一化参数");
 end
 parameter_key = string(normalization(1).ParameterKey);
 if any(string({normalization.ParameterKey}) ~= parameter_key)
@@ -52,7 +53,8 @@ metadata_signature = build_metadata_signature( ...
     PARAMETERS, parameter_key, SEQUENCE, SEQUENCE_STRIDE_FRAMES, ...
     ENERGY_BUFFER, NYQUIST_MARGIN, grid_h, grid_l, normalization);
 metadata_signature.workflow = cfg.provenance;
-metadata_signature.normalization_snapshot = sarflow_normalization_snapshot(metadata_signature);
+metadata_signature.normalization_stats=struct("Scene",{normalization.Scene}, ...
+    "Input",{normalization.Input},"GT",{normalization.GT});
 prepare_output_root(OUTPUT_ROOT, LQ_ROOT, GT_ROOT, metadata_signature);
 
 %% =========================== 正式数据集生成 ==============================
@@ -145,22 +147,6 @@ fprintf('输出目录：%s\n', OUTPUT_ROOT);
 output_root = OUTPUT_ROOT;
 end
 
-function validate_public_dependencies(repo_root)
-% 检查实际普通源码目录和当前MATLAB路径，避免误用其他工程同名函数。
-groups=struct("sarproc",["Range_Compress","RCMC","SAR_Imaging","estimate_rc_alignment","align_and_mix_rc","focus_base_rc","generate_gt_image","sar_image_roi_indices"], ...
-    "utils",["minmaxnormalize_image","crop_center"], ...
-    "sampling",["upsample_range_fft","crop_range_spectrum","resolve_range_grid"], ...
-    "sft",["quantize_1bit","build_2dsft_carrier","build_2dsft_threshold","resolve_azimuth_bandwidth","resolve_pair_grids","make_range_sft_pair","generate_range_2dsft_rc"]);
-for folder=string(fieldnames(groups)).'
-    for name=groups.(folder)
-        expected=fullfile(repo_root,"src",folder,name+".m");
-        if ~isfile(expected)||~strcmpi(string(which(name)),expected)
-            error('rangeSFTDataset:DependencyMissing','公共函数路径错误：%s',expected);
-        end
-    end
-end
-end
-
 function validate_configuration(parameters, sequence, stride_frames, buffer)
 %VALIDATE_CONFIGURATION 检查固定九帧协议和生产参数的基本合法性。
 fixed=isfield(parameters,'Q');
@@ -183,10 +169,7 @@ expected_sequence = struct( ...
     "patch_size", 512, "roi_size", 600, ...
     "valid_margin", 344, "logic_length", 1536, ...
     "block_width", 2224);
-if ~isequaln(sequence, expected_sequence)
-    error('rangeSFTDataset:SequenceProtocol', ...
-        '数据生成必须使用固定的1200×2224九帧几何协议。');
-end
+sarflow_check_parameters(sequence,expected_sequence,"九帧几何");
 if stride_frames ~= 3 || (~fixed && buffer ~= 64)
     error('rangeSFTDataset:FixedProductionProtocol', ...
         '序列间距必须为3帧，RC边界buffer必须为64列。');
@@ -195,7 +178,7 @@ end
 
 function normalization = load_all_scene_normalization( ...
         stats_root, scenes, parameters, sequence, buffer, ...
-        S60, grid_h, grid_l)
+        S60)
 %LOAD_ALL_SCENE_NORMALIZATION 预先加载并验证七场景生产分位数。
 if ~isfolder(stats_root)
     error('rangeSFTDataset:StatsRootMissing', ...
@@ -204,26 +187,18 @@ if ~isfolder(stats_root)
 end
 empty = struct("Scene", "", "SceneKey", "", "StatsFile", "", ...
     "ParameterKey", "", "Input", struct(), "GT", struct(), ...
-    "Protocol", struct(), "SceneUpdatedAt", "", "EntryUpdatedAt", "");
+    "Protocol", struct());
 normalization = repmat(empty, numel(scenes), 1);
 for idx = 1:numel(scenes)
     normalization(idx) = load_scene_normalization( ...
         stats_root, scenes(idx), parameters, sequence, buffer, ...
-        S60, grid_h, grid_l);
-end
-reference_protocol = normalization(1).Protocol;
-for idx = 2:numel(normalization)
-    if ~isequaln(normalization(idx).Protocol, reference_protocol)
-        error('rangeSFTDataset:StatsProtocolMismatch', ...
-            '场景%s的分位数协议与其他场景不一致。', ...
-            normalization(idx).Scene);
-    end
+        S60);
 end
 end
 
 function output = load_scene_normalization( ...
         stats_root, scene, parameters, sequence, buffer, ...
-        S60, grid_h, grid_l)
+        S60)
 %LOAD_SCENE_NORMALIZATION 按场景和完整参数键读取JointHL及GT统计。
 scene_key = sarflow_statistics("make_scene_key", scene);
 file_path = fullfile(stats_root, scene_key + ".mat");
@@ -237,15 +212,6 @@ if ~isfield(loaded, 'scene_stats')
         '分位数文件缺少scene_stats：%s。', file_path);
 end
 stats = loaded.scene_stats;
-required = ["schema_version", "scene_name", "scene_key", ...
-    "protocol", "gt", "entries", "updated_at"];
-if ~all(isfield(stats, required)) || ...
-        string(stats.schema_version) ~= "range_2dsft_scene_percentiles_v2" || ...
-        ~strcmpi(string(stats.scene_name), scene) || ...
-        string(stats.scene_key) ~= scene_key
-    error('rangeSFTDataset:SceneStatsIdentity', ...
-        '场景分位数身份或schema不匹配：%s。', file_path);
-end
 verify_stats_protocol(stats.protocol, sequence, buffer, S60, file_path,isfield(parameters,'Q'));
 
 parameter_key = sarflow_statistics("make_parameter_key", parameters, stats.protocol);
@@ -261,24 +227,9 @@ if numel(match) ~= 1
         scene, parameter_key);
 end
 entry = stats.entries(match);
-if ~isequaln(entry.parameters, parameters)
-    error('rangeSFTDataset:ParameterStatsMismatch', ...
-        '场景%s的参数键与条目内实际参数不一致。', scene);
-end
-if isfield(parameters,'Q')
-    if ~isfield(entry,'effective_sampling')||~isfield(entry.effective_sampling,'Single')
-        error('rangeSFTDataset:SamplingStatsMissing','固定Q统计缺少Single有效采样网格。');
-    end
-    verify_effective_grid(entry.effective_sampling.Single,grid_h,"Single",scene);
-    validate_normalization_stats(entry.input_stats,"FixedQ",stats.protocol);
-else
-    if ~isfield(entry,'effective_sampling')||~all(isfield(entry.effective_sampling,["H","L"]))
-        error('rangeSFTDataset:SamplingStatsMissing','混合统计缺少H/L有效采样网格。');
-    end
-    verify_effective_grid(entry.effective_sampling.H,grid_h,"H",scene);
-    verify_effective_grid(entry.effective_sampling.L,grid_l,"L",scene);
-    validate_normalization_stats(entry.input_stats,"JointHL",stats.protocol);
-end
+sarflow_check_parameters(entry.parameters,parameters,"场景输入统计");
+modality="JointHL";if isfield(parameters,'Q'),modality="FixedQ";end
+validate_normalization_stats(entry.input_stats,modality,stats.protocol);
 validate_normalization_stats(stats.gt, "GT", stats.protocol);
 
 output = struct( ...
@@ -288,78 +239,33 @@ output = struct( ...
     "ParameterKey", parameter_key, ...
     "Input", entry.input_stats, ...
     "GT", stats.gt, ...
-    "Protocol", stats.protocol, ...
-    "SceneUpdatedAt", string(stats.updated_at), ...
-    "EntryUpdatedAt", string(entry.updated_at));
+    "Protocol", stats.protocol);
 end
 
-function verify_stats_protocol(protocol, sequence, buffer, S60, file_path, fixed)
-%VERIFY_STATS_PROTOCOL 确认统计值来自当前采样模式、生产成像及归一化协议。
-required = ["method", "working_echo", "parameter_file_60", ...
-    "low_percentile", "high_percentile", "percentile_method", ...
-    "roi_size", "joint_pool", "mixed_pixels_in_pool", "sequence", "imaging"];
-if fixed
-    valid_pool=isfield(protocol,'sampling_mode')&&protocol.sampling_mode=="fixed_q"&& ...
-        isfield(protocol,'joint_pool')&&protocol.joint_pool=="single_branch_all_9_frames";
-else
-    valid_pool=isfield(protocol,'energy_buffer')&&protocol.energy_buffer==buffer&& ...
-        isfield(protocol,'joint_pool')&&protocol.joint_pool=="equal_pixels_H_aligned_and_L_all_9_frames";
+function verify_stats_protocol(protocol,sequence,buffer,S60,~,fixed)
+% 只核对实际计算参数，不要求历史schema、算法标记或参数文件路径一致。
+sarflow_check_parameters(protocol.sequence,sequence,"统计序列参数");
+sarflow_check_parameters(protocol.imaging,S60,"统计成像参数");
+if ~fixed&&isfield(protocol,'energy_buffer')
+    sarflow_check_parameters(protocol,struct("energy_buffer",buffer),"能量对齐");
 end
-if ~all(isfield(protocol, required)) || ...
-        string(protocol.method) ~= "Range_2D_SFT" || ...
-        string(protocol.working_echo) ~= "60MHz_from_180MHz_stride3" || ...
-        string(protocol.percentile_method) ~= "midpoint_exact_tall" || ...
-        protocol.roi_size ~= sequence.roi_size || ...
-        ~valid_pool || ...
-        logical(protocol.mixed_pixels_in_pool) || ...
-        ~isequaln(protocol.sequence, sequence)
-    error('rangeSFTDataset:StatsProtocol', ...
-        '场景分位数不是当前采样模式的生产协议：%s。', file_path);
-end
-if protocol.low_percentile < 0 || protocol.high_percentile > 100 || ...
-        protocol.low_percentile >= protocol.high_percentile
-    error('rangeSFTDataset:StatsPercentiles', ...
-        '场景分位数协议范围无效：%s。', file_path);
-end
-if ~isequaln(protocol.imaging, sarflow_statistics("imaging_parameters",S60))
-    error('rangeSFTDataset:StatsImaging', ...
-        '统计协议中的成像参数与当前FS60_params.mat不一致：%s。', file_path);
+if isfield(protocol,'sampling_mode')
+    mode="hlh";if fixed,mode="fixed_q";end
+    sarflow_check_parameters(protocol,struct("sampling_mode",mode),"归一化模式");
 end
 end
 
-function validate_normalization_stats(stats, modality, protocol)
-%VALIDATE_NORMALIZATION_STATS 检查归一化上下限和统计身份。
-required = ["Modality", "VMin", "VMax", "ImageCount", ...
-    "PixelCount", "LowPercentile", "HighPercentile", "Method"];
-if ~all(isfield(stats, required)) || ...
-        string(stats.Modality) ~= string(modality) || ...
-        ~isfinite(stats.VMin) || ~isfinite(stats.VMax) || ...
-        stats.VMax <= stats.VMin || stats.ImageCount <= 0 || ...
-        stats.PixelCount <= 0 || ...
-        stats.LowPercentile ~= protocol.low_percentile || ...
-        stats.HighPercentile ~= protocol.high_percentile || ...
-        string(stats.Method) ~= "midpoint_exact_tall"
-    error('rangeSFTDataset:NormalizationStats', ...
-        '%s归一化统计无效或与场景协议不一致。', modality);
+function validate_normalization_stats(stats,modality,protocol)
+% 归一化只需要有效上下限和相应分位点；计数、后端及版本仅作记录。
+if ~all(isfield(stats,["VMin","VMax"]))|| ...
+        ~isfinite(stats.VMin)||~isfinite(stats.VMax)||stats.VMax<=stats.VMin
+    error('rangeSFTDataset:NormalizationStats','%s归一化上下限无效。',modality);
 end
+if isfield(stats,'Modality')&&string(stats.Modality)~=modality
+    error('sarflow:ParameterMismatch','归一化模式不符：原值=%s；当前值=%s。',stats.Modality,modality);
 end
-
-function verify_effective_grid(actual, expected, label, scene)
-%VERIFY_EFFECTIVE_GRID 防止分位数与数据生成使用不同的整数采样网格。
-names = ["q_range", "q_azimuth", "q_range_eff", ...
-    "q_azimuth_eff", "q_total_eff", "input_size", ...
-    "upsampled_size", "Fs_up", "PRF_up"];
-if ~all(isfield(actual, names))
-    error('rangeSFTDataset:EffectiveGridSchema', ...
-        '场景%s的%s网格字段不完整。', scene, label);
-end
-for name = names
-    if ~isequaln(actual.(name), expected.(name))
-        error('rangeSFTDataset:EffectiveGridMismatch', ...
-            '场景%s的%s有效采样字段%s与当前参数不一致。', ...
-            scene, label, name);
-    end
-end
+expected=struct("LowPercentile",protocol.low_percentile,"HighPercentile",protocol.high_percentile);
+sarflow_check_parameters(stats,expected,"归一化分位点");
 end
 
 function signature = build_metadata_signature( ...
@@ -367,16 +273,7 @@ function signature = build_metadata_signature( ...
         parameters, parameter_key, sequence, stride_frames, buffer, ...
         nyquist_margin, grid_h, grid_l, normalization)
 %BUILD_METADATA_SIGNATURE 记录会改变数据集语义的全部生产配置。
-sources = repmat(struct("Scene", "", "StatsFile", "", ...
-    "SceneUpdatedAt", "", "EntryUpdatedAt", ""), ...
-    numel(normalization), 1);
-for idx = 1:numel(normalization)
-    sources(idx) = struct( ...
-        "Scene", normalization(idx).Scene, ...
-        "StatsFile", normalization(idx).StatsFile, ...
-        "SceneUpdatedAt", normalization(idx).SceneUpdatedAt, ...
-        "EntryUpdatedAt", normalization(idx).EntryUpdatedAt);
-end
+sources=struct("Scene",{normalization.Scene},"StatsFile",{normalization.StatsFile});
 signature = struct( ...
     "schema_version", "range_2dsft_png_dataset_v1", ...
     "script", string(script_path), ...
@@ -404,53 +301,20 @@ if isfield(parameters,'Q')
 end
 end
 
-function prepare_output_root(output_root, lq_root, gt_root, signature)
-%PREPARE_OUTPUT_ROOT 创建输出目录并拒绝混用不同生产协议。
-metadata_path = fullfile(output_root, "dataset_metadata.mat");
-if isfolder(output_root)
-    has_lq_content = folder_has_entries(lq_root);
-    has_gt_content = folder_has_entries(gt_root);
-    if isfile(metadata_path)
-        loaded = load(metadata_path, 'dataset_metadata');
-        if ~isfield(loaded, 'dataset_metadata') || ...
-                ~isfield(loaded.dataset_metadata, 'signature') || ...
-                ~sarflow_dataset_compatible(loaded.dataset_metadata.signature, signature)
-            error('rangeSFTDataset:MetadataMismatch', ...
-                '已有输出目录的metadata与当前生产协议不一致：%s。', ...
-                output_root);
-        end
-        % 仅迁移来源路径或工作流记录时更新metadata；已有PNG保持不动。
-        if ~isequaln(loaded.dataset_metadata.signature, signature)
-            dataset_metadata = loaded.dataset_metadata;
-            dataset_metadata.signature = signature;
-            atomic_save_metadata(metadata_path, dataset_metadata);
-        end
-    elseif has_lq_content || has_gt_content
-        error('rangeSFTDataset:MetadataMissing', ...
-            '已有输出图像但缺少dataset_metadata.mat：%s。', output_root);
+function prepare_output_root(output_root,lq_root,gt_root,metadata)
+% 已有结果仅核对实际参数；不回溯旧统计文件、时间戳或整个metadata。
+metadata_path=fullfile(output_root,"dataset_metadata.mat");
+if isfile(metadata_path)
+    loaded=load(metadata_path,'dataset_metadata');
+    if isfield(loaded.dataset_metadata,'signature')
+        sarflow_check_parameters(loaded.dataset_metadata.signature,metadata,"数据集参数");
     end
 end
-ensure_directory(output_root);
-ensure_directory(lq_root);
-ensure_directory(gt_root);
+ensure_directory(output_root);ensure_directory(lq_root);ensure_directory(gt_root);
 if ~isfile(metadata_path)
-    dataset_metadata = struct( ...
-        "created_at", string(datetime('now', ...
-        'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')), ...
-        "signature", signature);
-    atomic_save_metadata(metadata_path, dataset_metadata);
+    dataset_metadata=struct("created_at",string(datetime('now')), "signature",metadata);
+    atomic_save_metadata(metadata_path,dataset_metadata);
 end
-end
-
-function yes = folder_has_entries(path)
-%FOLDER_HAS_ENTRIES 判断目录中是否已有除点目录外的内容。
-if ~isfolder(path)
-    yes = false;
-    return;
-end
-entries = dir(path);
-names = string({entries.name});
-yes = any(names ~= "." & names ~= "..");
 end
 
 function [raw_data, rstart_id] = load_echo_file(file_path, file_name, S60)

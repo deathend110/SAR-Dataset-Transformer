@@ -1,11 +1,11 @@
-function frames = sarflow_search_gt_frames(cfg,record,row,S60,stats,session)
+function frames = sarflow_search_gt_frames(cfg,~,row,S60,stats,session)
 %SARFLOW_SEARCH_GT_FRAMES 优先复用会话及旧版完整GT缓存，不写逐序列文件。
 [frames,found]=session.gt(row,stats);
 if found,return;end
 p=sarflow_paths(cfg);
 path=fullfile(p.cache,"gt_frames",sprintf('sequence_%06d.mat',row.SequenceID));
-signature=struct("run",record.signature,"row",row,"stats",stats);
-old=sarflow_load_state(path,signature,struct("signature",signature,"frames",[]));
+old=sarflow_load_state(path,struct("parameters",sarflow_parameters(stats),"frames",[]));
+sarflow_check_parameters(sarflow_state_parameters(old),stats,"GT归一化");
 frames=old.frames;
 if isempty(frames)
     s=cfg.sequence;signal=session.block(row,S60,s.block_width);
