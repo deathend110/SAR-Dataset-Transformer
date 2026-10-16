@@ -3,9 +3,10 @@ function summary = sarflow_confirm_impl(cfg)
 if nargin==0,cfg=range_2dsft_config();end
 directory_guard=setup_range_2dsft_paths(cfg); %#ok<NASGU>
 record=sarflow_prepare_run(cfg);locked=sarflow_read_lock(cfg,record);
+session=SarflowSearchSession(cfg);
 metrics=table();
 for k=1:height(locked)
-    rows=sarflow_evaluate_candidate(cfg,record,locked(k,:),"confirm");
+    rows=sarflow_evaluate_candidate(cfg,record,locked(k,:),"confirm",session);
     if isempty(metrics),metrics=rows;else,metrics=[metrics;rows];end %#ok<AGROW>
 end
 summary=sarflow_rank_candidates(metrics);
@@ -24,5 +25,6 @@ p=sarflow_paths(cfg);
 sarflow_atomic_save(fullfile(p.confirmation,"confirmation.mat"), ...
     struct("summary",summary,"metrics",metrics,"record",record,"locked",locked,"complete",true));
 writetable(summary,fullfile(p.confirmation,"confirmation.csv"));
+sarflow_atomic_save(fullfile(p.confirmation,"runtime.mat"),struct("runtime",session.snapshot()));
 fprintf('独立确认完成；结果不参与选优，不构成恢复模型测试集。\n');
 end

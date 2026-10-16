@@ -1,6 +1,7 @@
 function record = sarflow_prepare_run(cfg)
 %PREPARE_RUN 只检查文件头与网格；固定清单并严格核验运行签名。
 fixed=sarflow_is_fixed(cfg);
+sarflow_search_cache_budget(cfg); % 执行选项只验证，不进入科学配置签名。
 if fixed
     q=cfg.search.fixed_q_values;
     if ~isnumeric(q)||~isvector(q)||isempty(q)||any(~isfinite(q))||any(q<1)||numel(unique(q))~=numel(q)
@@ -74,6 +75,7 @@ if ~isstring(cfg.search.exclude_files)||~isvector(cfg.search.exclude_files)&&~is
     error('sarflow:ExcludedFiles','exclude_files必须是清单中轨迹的完整路径string向量。');
 end
 config=rmfield(cfg,{'stage','provenance'});
+if isfield(config,'search_runtime'),config=rmfield(config,'search_runtime');end
 config.evaluate=rmfield(config.evaluate,{'workers','chunk_size'});
 % 保持已有混合模式签名原样；不相关的倍率配置不影响本模式恢复。
 if fixed

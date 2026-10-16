@@ -42,6 +42,7 @@ cfg.search.fine_STR_offsets = -2:1:2;
 cfg.search.fine_frequency_offsets = -0.2:0.05:0.2;
 cfg.search.search_per_scene = 5;
 cfg.search.confirm_per_scene = 2;
+cfg.search_runtime.cache_gb = 8; % 搜索/确认缓存上限，不是MATLAB总内存上限。
 
 % 正式归一化统计的抽样量、精确分位数内存上限及评估并行设置。
 cfg.stats.blocks_per_file = 10;

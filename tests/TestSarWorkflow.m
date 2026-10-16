@@ -147,6 +147,11 @@ classdef TestSarWorkflow < matlab.unittest.TestCase
             end
             first=run_range_2dsft_workflow(cfg);second=run_range_2dsft_workflow(cfg);
             t.verifyEqual(first.record,second.record);
+            % 缓存容量和新执行选项均不进入科学签名，旧配置可继续恢复。
+            changed=cfg;changed.search_runtime.cache_gb=0.25;
+            resumed=run_range_2dsft_workflow(changed);t.verifyEqual(resumed.record,first.record);
+            resumed=run_range_2dsft_workflow(rmfield(cfg,'search_runtime'));
+            t.verifyEqual(resumed.record,first.record);
             m=first.record.manifest;t.verifyEqual(sum(m.Role=="search"),5);t.verifyEqual(sum(m.Role=="confirm"),2);
             t.verifyEqual(m.File(m.Role=="confirm"),["rstart 3.mat";"rstart 5.mat"]);
             t.verifyEmpty(intersect(m.File(m.Role=="search"),m.File(m.Role=="confirm")));

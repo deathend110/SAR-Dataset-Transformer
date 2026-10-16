@@ -1,24 +1,33 @@
-function stats = sarflow_fit_gt(cfg, record, scene)
-%FIT_GT GT只用搜索样本拟合，按场景共享；每条序列原子记录进度。
-p=sarflow_paths(cfg); directory=fullfile(p.cache,"search","gt",scene);
+function stats = sarflow_fit_gt(cfg, record, scene, session)
+%FIT_GT GT仅由搜索样本拟合；场景完成后提交统计，不写像素chunk。
+if nargin<4,session=SarflowSearchSession(cfg);end
+p=sarflow_paths(cfg);
 rows=record.manifest(record.manifest.Scene==scene & record.manifest.Role=="search",:);
 signature=struct("run",record.signature,"rows",rows);
 path=fullfile(p.checkpoints,"search","gt",scene,"state.mat");
 state=sarflow_load_state(path,signature,struct("signature",signature,"completed",0,"stats",struct()));
 if ~isempty(fieldnames(state.stats)),stats=state.stats;return;end
-S60=load(cfg.parameter_file_60);s=cfg.sequence;
-for j=state.completed+1:height(rows)
-    signal=sarflow_load_echo_block(rows(j,:),S60,s.block_width);
-    values=zeros(s.roi_size^2*s.n_frames,1,'single');
+% 旧版未完成的场景从头拟合，保留旧chunk和断点，不将其当作完整结果。
+S60=load(cfg.parameter_file_60);s=cfg.sequence;n=height(rows);
+values=zeros(n*s.roi_size^2*s.n_frames,1,'single');rois=cell(n,1);cursor=0;
+for j=1:n
+    signal=session.block(rows(j,:),S60,s.block_width);
     for k=1:s.n_frames
         roi=generate_gt_image(signal(:,sarflow_frame_columns(s,k)),S60,s.roi_size);
-        values((k-1)*s.roi_size^2+(1:s.roi_size^2))=single(roi(:));
+        if k==1,images=zeros(s.roi_size,s.roi_size,s.n_frames,'like',roi);end
+        images(:,:,k)=roi;
+        values(cursor+(1:numel(roi)))=single(roi(:));cursor=cursor+numel(roi);
     end
-    sarflow_atomic_save(fullfile(directory,sprintf('chunk_%06d.mat',j)),struct("values",values));
-    state.completed=j;sarflow_atomic_save(path,struct("state",state));
+    rois{j}=images;
 end
-state.stats=sarflow_statistics("calculate_chunk_percentiles",directory, ...
-    [cfg.low_percentile,cfg.high_percentile],"GT",height(rows)*s.n_frames, ...
-    s.roi_size^2,cfg.stats.memory_gb,height(rows),cfg.stats.in_memory);
-sarflow_atomic_save(path,struct("state",state));stats=state.stats;
+stats=sarflow_pixel_statistics(values,cfg,"GT",n*s.n_frames,n);
+for j=1:n
+    frames=zeros(s.patch_size,s.patch_size,s.n_frames,'uint8');
+    for k=1:s.n_frames
+        frames(:,:,k)=sarflow_normalize_frame(rois{j}(:,:,k),stats,s.patch_size);
+    end
+    session.rememberGT(rows(j,:),stats,frames);
+end
+state.stats=stats;state.completed=n;
+sarflow_atomic_save(path,struct("state",state));
 end

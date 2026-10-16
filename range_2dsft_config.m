@@ -27,6 +27,8 @@ cfg.search = struct("hl_pairs", [4,2; 2.5,1.5; 3.25,1.75], ...
 % 根据确认结果调整方案后，可排除旧运行轨迹，重新建立独立确认样本。
 cfg.search.exclude_files = strings(0,1);
 cfg.search.fixed_q_values = [2,2.5,3];
+% 仅约束搜索/确认会话缓存；FFT、当前场景ROI和分位数临时数组另占内存。
+cfg.search_runtime = struct("cache_gb", 8);
 cfg.stats = struct("blocks_per_file", 10, "memory_gb", 8, "in_memory", true);
 cfg.generate = struct("stride_frames", 3, "gt_cache_frames", 32);
 cfg.evaluate = struct("workers", 0, "chunk_size", 256);
